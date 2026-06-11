@@ -1,0 +1,1104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Labyrinth</title>
+<!-- v1.1: move highlighting, push animation, cobble/dirt art, treasure tracker -->
+<style>
+  :root{
+    --cell: min(12vh, calc((100vw - 650px)/7.8), 170px);
+    --edge: calc(var(--cell)*0.38);
+    --bg:#1d2230; --panel:#262c3e;
+    --reach:#7ee08755; --reach-border:#7ee087;
+    --text:#e8e6e0; --dim:#9aa0b0; --accent:#e9c46a;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif;
+       display:flex; align-items:center; justify-content:center; min-height:100vh; gap:24px; padding:16px;}
+  #sidebar{width:300px; background:var(--panel); border-radius:14px; padding:18px; display:flex; flex-direction:column; gap:14px; max-height:calc(7.76*var(--cell)); overflow-y:auto;}
+  #rightbar{width:230px; background:var(--panel); border-radius:14px; padding:18px; display:flex; flex-direction:column; gap:14px; max-height:calc(7.76*var(--cell)); overflow-y:auto;}
+  h1{font-size:1.4em; color:var(--accent); letter-spacing:2px;}
+  .playerRow{display:flex; align-items:center; gap:8px; padding:7px 9px; border-radius:8px; background:#1f2433; border:2px solid transparent; font-size:.92em;}
+  .playerRow.active{border-color:var(--accent);}
+  .pdot{width:14px; height:14px; border-radius:50%; flex-shrink:0;}
+  .pfound{margin-left:auto; display:flex; align-items:center; gap:6px; font-size:.95em;}
+  .cardStack{display:flex;}
+  .mcard{width:11px; height:15px; border-radius:2.5px; margin-left:-7px; flex-shrink:0;
+       background:linear-gradient(135deg,#e9c46a,#9a7b24); border:1px solid #00000070; box-shadow:0 1px 2px #0007;}
+  .mcard:first-child{margin-left:0;}
+  #cardBox{background:#1f2433; border-radius:10px; padding:12px; text-align:center;}
+  .label{color:var(--dim); font-size:.78em; text-transform:uppercase; letter-spacing:1px;}
+  #cardEmoji{font-size:3.4em; line-height:1.3;}
+  #cardName{font-size:.95em;}
+  #spareBox{background:#1f2433; border-radius:10px; padding:12px; text-align:center;}
+  #spareWrap{width:calc(var(--cell)*1.1); height:calc(var(--cell)*1.1); margin:8px auto 4px; cursor:pointer; border-radius:8px; transition:transform .15s;}
+  #spareWrap:hover{transform:scale(1.06);}
+  #hint{font-size:.85em; color:var(--accent); min-height:2.4em; text-align:center;}
+  #log{background:#1f2433; border-radius:10px; padding:10px; font-size:.8em; color:var(--dim);
+       flex:1; min-height:90px; max-height:200px; overflow-y:auto; display:flex; flex-direction:column-reverse;}
+  #log div{padding:1px 0;}
+  button{background:var(--accent); color:#222; border:none; border-radius:8px; padding:9px 14px;
+         font-weight:600; cursor:pointer; font-size:.95em;}
+  button:hover{filter:brightness(1.1);}
+  #boardGrid{display:grid; position:relative;
+       grid-template-columns:var(--edge) repeat(7, var(--cell)) var(--edge);
+       grid-template-rows:var(--edge) repeat(7, var(--cell)) var(--edge);}
+  .cell{position:relative; width:var(--cell); height:var(--cell); padding:2px;}
+  .cell svg{width:100%; height:100%; display:block; border-radius:6px;}
+  .cell.reach{cursor:pointer;}
+  .cell.pushable{cursor:pointer;}
+  .cell.pushable:hover{filter:brightness(1.18);}
+  .cell.reach::after{content:''; position:absolute; inset:2px; border-radius:6px;
+       background:var(--reach); border:2px solid var(--reach-border); pointer-events:none;}
+  .arrow{display:flex; align-items:center; justify-content:center; font-size:calc(var(--edge)*0.78);
+         color:var(--accent); cursor:pointer; opacity:.75; transition:opacity .12s, transform .12s; user-select:none;}
+  .arrow:hover{opacity:1; transform:scale(1.25);}
+  .arrow.forbidden{font-size:calc(var(--edge)*0.9); font-weight:800; color:#e63946; opacity:.9;
+       cursor:not-allowed; text-shadow:0 1px 5px #000b;}
+  .arrow.forbidden:hover{opacity:1; transform:none;}
+  .arrow.inactive{opacity:.15; cursor:default;}
+  .arrow.inactive:hover{opacity:.15; transform:none;}
+  .arrow.used{opacity:1 !important; text-shadow:0 0 10px var(--accent);}
+  /* hovering an arrow previews the row/column it would shift */
+  .cell.previewLine{filter:brightness(1.18);}
+  .cell.previewLine::before{content:''; position:absolute; inset:2px; border-radius:6px;
+       box-shadow:inset 0 0 0 3px #e9c46aaa; pointer-events:none; z-index:2;}
+  /* last-move marks (Lichess-style) */
+  .mark{position:absolute; inset:2px; border-radius:6px; pointer-events:none;}
+  .mark.movefrom{border:3px dashed currentColor; opacity:.75;}
+  .mark.moveto{border:3px solid currentColor; opacity:.9;}
+  /* push slide animation */
+  @keyframes fromN{from{transform:translateY(calc(var(--cell)*-1));}to{transform:translateY(0);}}
+  @keyframes fromS{from{transform:translateY(var(--cell));}to{transform:translateY(0);}}
+  @keyframes fromW{from{transform:translateX(calc(var(--cell)*-1));}to{transform:translateX(0);}}
+  @keyframes fromE{from{transform:translateX(var(--cell));}to{transform:translateX(0);}}
+  .slideN{animation:fromN .8s ease-in-out;} .slideS{animation:fromS .8s ease-in-out;}
+  .slideW{animation:fromW .8s ease-in-out;} .slideE{animation:fromE .8s ease-in-out;}
+  /* game-start deal: fixed tiles fade in, movable tiles fall into place */
+  .cell.dealFixed{opacity:0; animation:dealFixed .45s ease-out forwards;}
+  @keyframes dealFixed{from{opacity:0; transform:scale(.85);} to{opacity:1; transform:none;}}
+  .cell.deal{opacity:0; animation:dealTile .5s cubic-bezier(.22,.9,.3,1.18) forwards;}
+  @keyframes dealTile{
+    0%{opacity:0; transform:translateY(calc(var(--cell)*-1.6)) rotate(-8deg) scale(1.12);}
+    55%{opacity:1;}
+    100%{opacity:1; transform:none;}}
+  #spareWrap.deal{animation:dealFixed .45s ease-out backwards;}
+  /* gliding pawn (movement animation overlay) */
+  .pawn.glide{transition:left .24s linear, top .24s linear; z-index:5; width:auto; height:auto;}
+  /* treasure collection effects */
+  .collectFX{position:absolute; z-index:7; font-size:calc(var(--cell)*0.5); pointer-events:none;
+       text-shadow:0 0 14px gold; animation:collectPop 1.15s ease-out forwards;}
+  @keyframes collectPop{
+    0%{transform:scale(1) translateY(0); opacity:1;}
+    55%{transform:scale(1.9) translateY(calc(var(--cell)*-0.45)); opacity:1;}
+    100%{transform:scale(2.2) translateY(calc(var(--cell)*-0.75)); opacity:0;}}
+  .burst{position:absolute; z-index:6; border-radius:50%; border:4px solid gold;
+       pointer-events:none; animation:burstAnim .95s ease-out forwards;}
+  @keyframes burstAnim{from{transform:scale(.25); opacity:.95;} to{transform:scale(2.1); opacity:0;}}
+  /* pulsing rings marking each player's current objective, in their colour */
+  .targetRing{position:absolute; inset:22%; border-radius:50%; border:6px solid currentColor;
+       opacity:0; animation:targetPulse 2.6s ease-out infinite; pointer-events:none; z-index:3;}
+  @keyframes targetPulse{0%{transform:scale(.35); opacity:.95;} 75%{transform:scale(2.05); opacity:0;}
+       100%{transform:scale(2.05); opacity:0;}}
+  #spareWrap{position:relative;}
+  /* occasional treasure wiggle (attention without noise) */
+  .tEmoji{transform-origin:50% 50%; transform-box:fill-box; animation:tWiggle 7s ease-in-out infinite;}
+  @keyframes tWiggle{0%,86%,100%{transform:rotate(0) scale(1);}
+       89%{transform:rotate(-9deg) scale(1.08);} 92%{transform:rotate(8deg) scale(1.1);}
+       95%{transform:rotate(-5deg) scale(1.05);} 98%{transform:rotate(2deg) scale(1);}}
+  /* streak popup */
+  .streakFX{position:absolute; z-index:7; font-weight:800; font-size:calc(var(--cell)*0.3);
+       color:#ff9f1c; text-shadow:0 1px 6px #000c; white-space:nowrap; pointer-events:none;
+       animation:streakUp 1.5s ease-out forwards;}
+  @keyframes streakUp{0%{transform:translateY(0); opacity:0;} 15%{opacity:1;}
+       100%{transform:translateY(calc(var(--cell)*-1.1)); opacity:0;}}
+  /* treasure tracker */
+  #trackerBox{background:#1f2433; border-radius:10px; padding:12px;}
+  #tracker{display:grid; grid-template-columns:repeat(6,1fr); gap:4px; margin-top:8px;}
+  .tr{position:relative; font-size:1.2em; text-align:center; border-radius:6px; background:#262c3e; padding:2px 0; cursor:default;}
+  .tr.seen{opacity:.22; filter:grayscale(1);}
+  .tr.target{box-shadow:0 0 0 2px var(--accent);}
+  .tr .dot{position:absolute; right:2px; bottom:2px; width:8px; height:8px; border-radius:50%; border:1px solid #0009;}
+  .pawn{position:absolute; width:22%; height:22%; border-radius:50%; border:2px solid #00000088;
+        box-shadow:0 1px 4px #000a; pointer-events:none; transition:all .35s;}
+  .homeRing{position:absolute; inset:30%; border-radius:50%; border:3px dashed; opacity:.65; pointer-events:none;}
+  #overlay{position:fixed; inset:0; background:#000a; display:flex; align-items:center; justify-content:center; z-index:10;}
+  #overlay .panel{background:var(--panel); border-radius:16px; padding:34px 44px; text-align:center; max-width:430px;}
+  #overlay h2{color:var(--accent); margin-bottom:14px;}
+  #overlay p{color:var(--dim); margin-bottom:18px; font-size:.95em; line-height:1.5;}
+  .oppBtns{display:flex; gap:10px; justify-content:center; margin-bottom:20px;}
+  .oppBtns button{background:#1f2433; color:var(--text); border:2px solid #444c63; min-width:64px;}
+  .oppBtns button.sel{border-color:var(--accent); color:var(--accent);}
+  .hidden{display:none !important;}
+</style>
+</head>
+<body>
+
+<!-- shared SVG patterns: cobblestone walls + dirt paths -->
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <pattern id="cobble" width="25" height="25" patternUnits="userSpaceOnUse">
+      <rect width="25" height="25" fill="#787c85"/>
+      <ellipse cx="6"  cy="6"  rx="5"   ry="4"   fill="#8b8f98"/>
+      <ellipse cx="18" cy="7"  rx="5.5" ry="4.5" fill="#82868f"/>
+      <ellipse cx="7"  cy="18" rx="5"   ry="4.5" fill="#868a93"/>
+      <ellipse cx="19" cy="19" rx="4.5" ry="4"   fill="#8e929b"/>
+      <ellipse cx="13" cy="13" rx="3.5" ry="3"   fill="#7f838c"/>
+    </pattern>
+    <pattern id="cobbleF" width="25" height="25" patternUnits="userSpaceOnUse">
+      <rect width="25" height="25" fill="#666a73"/>
+      <ellipse cx="6"  cy="6"  rx="5"   ry="4"   fill="#787c85"/>
+      <ellipse cx="18" cy="7"  rx="5.5" ry="4.5" fill="#70747d"/>
+      <ellipse cx="7"  cy="18" rx="5"   ry="4.5" fill="#747881"/>
+      <ellipse cx="19" cy="19" rx="4.5" ry="4"   fill="#7b7f88"/>
+      <ellipse cx="13" cy="13" rx="3.5" ry="3"   fill="#6d717a"/>
+    </pattern>
+    <filter id="grayF"><feColorMatrix type="saturate" values="0"/></filter>
+    <pattern id="dirt" width="20" height="20" patternUnits="userSpaceOnUse">
+      <rect width="20" height="20" fill="#d8b88a"/>
+      <circle cx="4"  cy="5"  r="1.1" fill="#c7a675"/>
+      <circle cx="13" cy="9"  r="1.3" fill="#cead7e"/>
+      <circle cx="8"  cy="15" r="1"   fill="#c2a06d"/>
+      <circle cx="17" cy="17" r="1.2" fill="#cead7e"/>
+      <circle cx="16" cy="3"  r="0.9" fill="#c7a675"/>
+    </pattern>
+  </defs>
+</svg>
+
+<div id="sidebar">
+  <h1>LABYRINTH</h1>
+  <div id="players"></div>
+  <div id="trackerBox">
+    <div class="label">Treasure tracker · bright = not yet seen</div>
+    <div id="tracker"></div>
+  </div>
+  <div id="log"></div>
+  <button id="newGameBtn">New Game</button>
+</div>
+
+<div id="boardGrid"></div>
+
+<div id="rightbar">
+  <div id="cardBox">
+    <div class="label">Your treasure</div>
+    <div id="cardEmoji"></div>
+    <div id="cardName"></div>
+  </div>
+  <div id="spareBox">
+    <div class="label">Spare tile — click to rotate</div>
+    <div id="spareWrap"></div>
+  </div>
+  <div id="hint"></div>
+</div>
+
+<div id="overlay">
+  <div class="panel">
+    <h2>LABYRINTH</h2>
+    <p>Push the spare tile into the maze, then move your pawn along open paths.
+       Find all your treasures and return to your starting corner to win.</p>
+    <div class="label" style="color:var(--dim); margin-bottom:8px;">AI opponents</div>
+    <div class="oppBtns">
+      <button data-n="1" class="sel">1</button>
+      <button data-n="2">2</button>
+      <button data-n="3">3</button>
+    </div>
+    <div class="label" style="color:var(--dim); margin-bottom:8px;">AI difficulty</div>
+    <div class="oppBtns diffBtns">
+      <button data-d="standard">Standard</button>
+      <button data-d="hard" class="sel">Hard</button>
+    </div>
+    <button id="startBtn">Start Game</button>
+  </div>
+</div>
+
+<script id="engine">
+/* ============================================================
+   LABYRINTH ENGINE — pure game logic, no DOM dependencies.
+   Designed so a future multiplayer server can run this exact
+   module: all state is a plain serializable object, and all
+   mutations go through applyPush / applyMove.
+   ============================================================ */
+const N=1, E=2, S=4, W=8;
+const SIDES = {N:[-1,0], E:[0,1], S:[1,0], W:[0,-1]};
+const OPPOSITE = {N:'S', S:'N', E:'W', W:'E'};
+
+function rot(open, times){
+  for(let i=0;i<times;i++) open = ((open<<1)&15) | (open>>3);
+  return open;
+}
+function distinctRotations(open){
+  const set=[];
+  for(let k=0;k<4;k++){ const o=rot(open,k); if(!set.includes(o)) set.push(o); }
+  return set;
+}
+
+/* 24 treasures, faithful to the original count:
+   12 on fixed tiles, 6 on movable T-tiles, 6 on movable corner tiles */
+const TREASURES = [
+  {name:'Book',          emoji:'📖'}, {name:'Coin Purse',   emoji:'💰'},
+  {name:'Map',           emoji:'🗺️'}, {name:'Crown',        emoji:'👑'},
+  {name:'Keys',          emoji:'🗝️'}, {name:'Skull',        emoji:'💀'},
+  {name:'Ring',          emoji:'💍'}, {name:'Treasure Chest',emoji:'🧰'},
+  {name:'Emerald',       emoji:'💎'}, {name:'Sword',        emoji:'⚔️'},
+  {name:'Candelabra',    emoji:'🕯️'}, {name:'Helmet',       emoji:'🪖'},
+  {name:'Bat',           emoji:'🦇'}, {name:'Dragon',       emoji:'🐉'},
+  {name:'Genie',         emoji:'🧞'}, {name:'Ghost',        emoji:'👻'},
+  {name:'Sorceress',     emoji:'🧙'}, {name:'Owl',          emoji:'🦉'},
+  {name:'Scarab',        emoji:'🪲'}, {name:'Rat',          emoji:'🐀'},
+  {name:'Spider',        emoji:'🕷️'}, {name:'Moth',         emoji:'🦋'},
+  {name:'Salamander',    emoji:'🦎'}, {name:'Troll',        emoji:'👹'},
+];
+
+/* The 16 fixed tiles of the original board (row, col, openings, treasureId) */
+const FIXED = [
+  [0,0, S|E, null], [0,2, S|E|W, 0], [0,4, S|E|W, 1], [0,6, S|W, null],
+  [2,0, N|E|S, 2],  [2,2, N|E|S, 3], [2,4, S|E|W, 4], [2,6, N|S|W, 5],
+  [4,0, N|E|S, 6],  [4,2, N|E|W, 7], [4,4, N|S|W, 8], [4,6, N|S|W, 9],
+  [6,0, N|E, null], [6,2, N|E|W, 10],[6,4, N|E|W, 11],[6,6, N|W, null],
+];
+
+const PLAYER_DEFS = [
+  {name:'Red',    color:'#e63946', start:[0,0]},
+  {name:'Blue',   color:'#5390d9', start:[6,6]},
+  {name:'Yellow', color:'#f4a261', start:[0,6]},
+  {name:'Green',  color:'#2a9d8f', start:[6,0]},
+];
+
+/* deterministic RNG so games are reproducible/testable */
+function mulberry32(seed){
+  return function(){
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed>>>15, 1 | seed);
+    t = t + Math.imul(t ^ t>>>7, 61 | t) ^ t;
+    return ((t ^ t>>>14) >>> 0) / 4294967296;
+  };
+}
+function shuffle(arr, rand){
+  for(let i=arr.length-1;i>0;i--){
+    const j = Math.floor(rand()*(i+1));
+    [arr[i],arr[j]] = [arr[j],arr[i]];
+  }
+  return arr;
+}
+
+function newGame(numPlayers, seed){
+  const rand = mulberry32(seed);
+  /* movable tile pool: 13 straights, 6 treasure T-tiles, 6 treasure corners, 9 plain corners = 34 */
+  const pool = [];
+  for(let i=0;i<13;i++) pool.push({open:N|S, treasure:null, fixed:false});
+  for(let t=12;t<18;t++) pool.push({open:E|S|W, treasure:t, fixed:false});
+  for(let t=18;t<24;t++) pool.push({open:N|E, treasure:t, fixed:false});
+  for(let i=0;i<9;i++)  pool.push({open:N|E, treasure:null, fixed:false});
+  shuffle(pool, rand);
+  pool.forEach(t => t.open = rot(t.open, Math.floor(rand()*4)));
+
+  const board = Array.from({length:7}, ()=>Array(7).fill(null));
+  for(const [r,c,open,tr] of FIXED) board[r][c] = {open, treasure:tr, fixed:true};
+  let k=0;
+  for(let r=0;r<7;r++) for(let c=0;c<7;c++)
+    if(!board[r][c]) board[r][c] = pool[k++];
+  const spare = pool[k]; /* the 34th tile */
+
+  /* deal treasure cards: each player hunts them one at a time, in order */
+  const deck = shuffle([...Array(24).keys()], rand);
+  const per = Math.floor(24/numPlayers);
+  const players = [];
+  for(let i=0;i<numPlayers;i++){
+    const def = PLAYER_DEFS[i];
+    players.push({
+      idx:i, name:def.name, color:def.color,
+      start:[...def.start], row:def.start[0], col:def.start[1],
+      cards: deck.slice(i*per, (i+1)*per), found: [],
+      turns:0, done:false,
+      isAI: i>0,
+    });
+  }
+  return { board, spare, players, current:0, phase:'push', lastInsert:null,
+           winners:null, finished:[], seed };
+}
+
+function cloneState(s){
+  return {
+    board: s.board.map(row => row.map(t => ({...t}))),
+    spare: {...s.spare},
+    players: s.players.map(p => ({...p, start:[...p.start], cards:[...p.cards], found:[...p.found]})),
+    current: s.current, phase: s.phase,
+    lastInsert: s.lastInsert ? {...s.lastInsert} : null,
+    winners: s.winners ? [...s.winners] : null,
+    finished: [...s.finished],
+    seed: s.seed,
+  };
+}
+
+function legalInserts(state){
+  const out = [];
+  for(const side of ['N','S','W','E'])
+    for(const index of [1,3,5]){
+      if(state.lastInsert &&
+         state.lastInsert.side === OPPOSITE[side] &&
+         state.lastInsert.index === index) continue; /* may not undo previous push */
+      out.push({side, index});
+    }
+  return out;
+}
+
+/* Push the spare tile in at {side,index} with orientation `open`. */
+function applyPush(state, insert, open){
+  const {side, index} = insert;
+  const tile = {...state.spare, open};
+  const b = state.board;
+  let popped, entry;
+  if(side==='N'){
+    popped = b[6][index];
+    for(let r=6;r>0;r--) b[r][index] = b[r-1][index];
+    b[0][index] = tile; entry = [0,index];
+    for(const p of state.players) if(p.col===index){ p.row++; if(p.row>6) p.row=0; }
+  } else if(side==='S'){
+    popped = b[0][index];
+    for(let r=0;r<6;r++) b[r][index] = b[r+1][index];
+    b[6][index] = tile; entry = [6,index];
+    for(const p of state.players) if(p.col===index){ p.row--; if(p.row<0) p.row=6; }
+  } else if(side==='W'){
+    popped = b[index][6];
+    for(let c=6;c>0;c--) b[index][c] = b[index][c-1];
+    b[index][0] = tile; entry = [index,0];
+    for(const p of state.players) if(p.row===index){ p.col++; if(p.col>6) p.col=0; }
+  } else { /* E */
+    popped = b[index][0];
+    for(let c=0;c<6;c++) b[index][c] = b[index][c+1];
+    b[index][6] = tile; entry = [index,6];
+    for(const p of state.players) if(p.row===index){ p.col--; if(p.col<0) p.col=6; }
+  }
+  state.spare = popped;
+  state.lastInsert = {side, index};
+  state.phase = 'move';
+  return entry;
+}
+
+/* BFS over connected passages from (r,c). Returns {set, dist, prev}. */
+function bfs(state, r, c){
+  const set  = Array.from({length:7}, ()=>Array(7).fill(false));
+  const dist = Array.from({length:7}, ()=>Array(7).fill(Infinity));
+  const prev = Array.from({length:7}, ()=>Array(7).fill(null));
+  const q = [[r,c]];
+  set[r][c]=true; dist[r][c]=0;
+  while(q.length){
+    const [cr,cc] = q.shift();
+    const t = state.board[cr][cc];
+    for(const [side,[dr,dc]] of Object.entries(SIDES)){
+      if(!(t.open & {N,E,S,W}[side])) continue;
+      const nr=cr+dr, nc=cc+dc;
+      if(nr<0||nr>6||nc<0||nc>6||set[nr][nc]) continue;
+      const nt = state.board[nr][nc];
+      if(!(nt.open & {N,E,S,W}[OPPOSITE[side]])) continue;
+      set[nr][nc]=true; dist[nr][nc]=dist[cr][cc]+1; prev[nr][nc]=[cr,cc];
+      q.push([nr,nc]);
+    }
+  }
+  return {set, dist, prev};
+}
+
+/* Reconstruct the shortest path from a bfs() result to `to`.
+   Returns [[r,c], ...] from origin to destination, or null. */
+function pathTo(reach, to){
+  if(!reach.set[to[0]][to[1]]) return null;
+  const path = [];
+  let cur = to;
+  while(cur){ path.push(cur); cur = reach.prev[cur[0]][cur[1]]; }
+  return path.reverse();
+}
+
+function currentTargetId(player){
+  return player.found.length < player.cards.length ? player.cards[player.found.length] : null;
+}
+function findTreasure(state, id){
+  for(let r=0;r<7;r++) for(let c=0;c<7;c++)
+    if(state.board[r][c].treasure===id) return [r,c];
+  return null; /* it's on the spare tile */
+}
+
+/* Move current player's pawn to (r,c) — must be reachable. Handles
+   treasure collection, finishing, round completion and turn advance.
+   Equal-turns rule: when someone finishes (all treasures + home), play
+   continues until every player has had the same number of turns; all
+   players finished by then share the win (draws possible). */
+function applyMove(state, r, c){
+  const p = state.players[state.current];
+  p.row=r; p.col=c;
+  p.turns++;
+  const ev = {player:p.idx, collected:null, finished:false, gameOver:false};
+  const target = currentTargetId(p);
+  if(target!==null && state.board[r][c].treasure===target){
+    p.found.push(target);
+    ev.collected = target;
+  }
+  if(!p.done && currentTargetId(p)===null && r===p.start[0] && c===p.start[1]){
+    p.done = true;
+    state.finished.push(p.idx);
+    ev.finished = true;
+  }
+  if(state.finished.length){
+    const maxT = Math.max(...state.players.map(q=>q.turns));
+    if(state.players.every(q=>q.done || q.turns>=maxT)){
+      state.winners = [...state.finished];
+      state.phase = 'over';
+      ev.gameOver = true;
+      return ev;
+    }
+  }
+  do { state.current = (state.current+1) % state.players.length; }
+  while(state.players[state.current].done);
+  state.phase = 'push';
+  return ev;
+}
+
+/* ============================================================
+   AI. Both levels are "pathfinding perfect": they exhaustively try
+   every legal insertion × rotation and never miss a move that
+   reaches their objective. They differ in everything else:
+
+   - standard (aiGreedy): when blocked, walks toward the goal by
+     raw distance. No opponent model.
+   - hard (aiHard): scores every push by how many of the opponent's
+     replies still reach the opponent's (public) objective — denial —
+     and when blocked, scores destination cells by how many of its
+     own follow-up pushes would connect them to the goal
+     (next-turn potential), not by naive distance.
+   ============================================================ */
+function aiChooseMove(state, level){
+  return level==='hard' ? aiHard(state) : aiGreedy(state);
+}
+
+function aiGreedy(state){
+  const meIdx = state.current;
+  const targetId = currentTargetId(state.players[meIdx]);
+  let best = null;
+  for(const insert of legalInserts(state)){
+    for(const open of distinctRotations(state.spare.open)){
+      const s2 = cloneState(state);
+      applyPush(s2, insert, open);
+      const me = s2.players[meIdx];
+      const goal = targetId===null ? me.start : findTreasure(s2, targetId);
+      const {set, dist} = bfs(s2, me.row, me.col);
+      let score, dest;
+      if(goal && set[goal[0]][goal[1]]){
+        score = 100000 - dist[goal[0]][goal[1]];
+        dest = goal;
+      } else {
+        /* closest reachable cell to the goal (or board centre if the
+           treasure is on the spare tile) */
+        const aim = goal || [3,3];
+        let bd = Infinity, bc = [me.row, me.col], mob = 0;
+        for(let r=0;r<7;r++) for(let c=0;c<7;c++) if(set[r][c]){
+          mob++;
+          const d = Math.abs(r-aim[0]) + Math.abs(c-aim[1]);
+          if(d < bd){ bd=d; bc=[r,c]; }
+        }
+        score = 1000 - bd*20 + mob;
+        dest = bc;
+      }
+      if(!best || score > best.score) best = {score, insert, open, dest};
+    }
+  }
+  return best;
+}
+
+/* Where a cell ends up after a push (mirrors pawn-shift rules). */
+function shiftCell(cell, insert){
+  let [r,c] = cell;
+  const {side, index} = insert;
+  if(side==='N' && c===index){ r++; if(r>6) r=0; }
+  else if(side==='S' && c===index){ r--; if(r<0) r=6; }
+  else if(side==='W' && r===index){ c++; if(c>6) c=0; }
+  else if(side==='E' && r===index){ c--; if(c<0) c=6; }
+  return [r,c];
+}
+
+/* Next player in turn order who is still playing, or null. */
+function nextActivePlayer(state){
+  const n = state.players.length;
+  let i = state.current;
+  do { i = (i+1)%n; } while(state.players[i].done && i!==state.current);
+  return i===state.current ? null : i;
+}
+
+/* How many (insertion × rotation) replies let player pIdx reach their
+   current objective from the given position. 0 = fully blocked. */
+function countGoalReaching(state, pIdx){
+  const p = state.players[pIdx];
+  const tid = currentTargetId(p);
+  let count = 0;
+  for(const ins of legalInserts(state)){
+    for(const open of distinctRotations(state.spare.open)){
+      const s3 = cloneState(state);
+      applyPush(s3, ins, open);
+      const q = s3.players[pIdx];
+      const g = tid===null ? q.start : findTreasure(s3, tid);
+      if(g && bfs(s3, q.row, q.col).set[g[0]][g[1]]) count++;
+    }
+  }
+  return count;
+}
+
+/* For each cell, count how many of my own follow-up pushes would connect
+   it to my goal. (Connectivity is symmetric, so one BFS from the goal per
+   push covers every candidate cell at once.) */
+function selfPotential(state, meIdx, targetId){
+  const me = state.players[meIdx];
+  const pot = Array.from({length:7}, ()=>Array(7).fill(0));
+  for(const ins of legalInserts(state)){
+    for(const open of distinctRotations(state.spare.open)){
+      const s3 = cloneState(state);
+      applyPush(s3, ins, open);
+      const g = targetId===null ? me.start : findTreasure(s3, targetId);
+      if(!g) continue;
+      const back = bfs(s3, g[0], g[1]);
+      for(let r=0;r<7;r++) for(let c=0;c<7;c++){
+        const [sr,sc] = shiftCell([r,c], ins);
+        if(back.set[sr][sc]) pot[r][c]++;
+      }
+    }
+  }
+  return pot;
+}
+
+function aiHard(state){
+  const meIdx = state.current;
+  const targetId = currentTargetId(state.players[meIdx]);
+  const oppIdx = nextActivePlayer(state);
+  let best = null;
+  for(const insert of legalInserts(state)){
+    for(const open of distinctRotations(state.spare.open)){
+      const s2 = cloneState(state);
+      applyPush(s2, insert, open);
+      const me = s2.players[meIdx];
+      const goal = targetId===null ? me.start : findTreasure(s2, targetId);
+      const reach = bfs(s2, me.row, me.col);
+      /* denial: prefer pushes that strangle the opponent's options */
+      let denial = 0;
+      if(oppIdx!==null){
+        const oppOptions = countGoalReaching(s2, oppIdx);
+        denial = oppOptions===0 ? 400 : -oppOptions*12;
+      }
+      let score, dest;
+      if(goal && reach.set[goal[0]][goal[1]]){
+        score = 100000 - reach.dist[goal[0]][goal[1]]*10 + denial;
+        dest = goal;
+      } else {
+        /* blocked: stand where the most follow-up pushes reconnect me */
+        const pot = selfPotential(s2, meIdx, targetId);
+        const aim = goal || [3,3];
+        let bs = -Infinity, bc = [me.row, me.col];
+        for(let r=0;r<7;r++) for(let c=0;c<7;c++) if(reach.set[r][c]){
+          const v = pot[r][c]*100 - (Math.abs(r-aim[0])+Math.abs(c-aim[1]))*5;
+          if(v > bs){ bs=v; bc=[r,c]; }
+        }
+        /* hostage penalty: this push would put MY target treasure on the
+           spare — i.e. into the opponent's hand. They control where (and
+           how badly oriented) it re-enters, so my computed follow-up
+           potential is an overestimate. Strongly discourage. */
+        if(targetId!==null && !goal){
+          bs = Math.floor(bs/2) - 350;
+        }
+        score = 1000 + bs + denial;
+        dest = bc;
+      }
+      if(!best || score > best.score) best = {score, insert, open, dest};
+    }
+  }
+  return best;
+}
+
+if(typeof module!=='undefined') module.exports = {
+  N,E,S,W, rot, distinctRotations, TREASURES, FIXED, PLAYER_DEFS,
+  newGame, cloneState, legalInserts, applyPush, bfs, pathTo,
+  currentTargetId, findTreasure, applyMove, aiChooseMove,
+};
+</script>
+
+<script>
+/* ============================================================
+   UI LAYER
+   ============================================================ */
+let state = null;
+let busy = false;          /* true while AI is animating */
+let numOpponents = 1;
+let aiLevel = 'hard';
+let logLines = [];
+let uiLastMove = null;     /* {from:[r,c], to:[r,c], color} — pawn move highlight */
+let pawnArms = [null,null,null,null]; /* which path-arm each pawn rests on */
+let streaks  = [0,0,0,0];             /* consecutive treasure-collecting turns */
+let dealing  = false;                 /* true during the game-start deal animation */
+
+/* pawn resting spots: [topFrac, leftFrac] of the tile */
+const ARMPOS = {N:[0.17,0.5], E:[0.5,0.83], S:[0.83,0.5], W:[0.5,0.17]};
+const NUDGE  = [[-4,-4],[4,4],[4,-4],[-4,4]]; /* per-player % offset so pawns don't stack */
+function pawnSpot(i, tile){
+  const arm = pawnArms[i];
+  if(!arm || !(tile.open & {N:1,E:2,S:4,W:8}[arm])) return [0.5,0.5]; /* centre is always path */
+  return ARMPOS[arm];
+}
+
+const $ = id => document.getElementById(id);
+
+function tileSVG(tile, collected){
+  const o = tile.open;
+  const wall = tile.fixed ? 'url(#cobbleF)' : 'url(#cobble)';
+  const dirt = 'url(#dirt)';
+  let s = `<rect width="100" height="100" fill="${wall}"/>`;
+  /* dirt path: centre + open arms (1px overdraw avoids seams) */
+  s += `<rect x="33" y="33" width="34" height="34" fill="${dirt}"/>`;
+  if(o & 1) s += `<rect x="33" y="-1" width="34" height="35" fill="${dirt}"/>`;
+  if(o & 2) s += `<rect x="66" y="33" width="35" height="34" fill="${dirt}"/>`;
+  if(o & 4) s += `<rect x="33" y="66" width="34" height="35" fill="${dirt}"/>`;
+  if(o & 8) s += `<rect x="-1" y="33" width="35" height="34" fill="${dirt}"/>`;
+  /* soft shadow where path meets wall, for depth */
+  s += pathEdges(o);
+  s += `<rect width="100" height="100" fill="none" stroke="#00000040" stroke-width="2"/>`;
+  if(tile.treasure!==null){
+    const grey = collected && collected.has(tile.treasure);
+    s += `<circle cx="50" cy="50" r="21" fill="${grey ? '#00000022' : '#00000038'}"/>`;
+    const attrs = grey
+      ? ' opacity="0.32" filter="url(#grayF)"'
+      : ` class="tEmoji" style="animation-delay:${(tile.treasure%7)*0.9}s"`;
+    s += `<text x="50" y="50" font-size="34" text-anchor="middle" dominant-baseline="central"${attrs}>${TREASURES[tile.treasure].emoji}</text>`;
+  }
+  return `<svg viewBox="0 0 100 100">${s}</svg>`;
+}
+/* thin dark lines along the path/wall boundary so passages read clearly */
+function pathEdges(o){
+  const L = [];
+  const ln = (x1,y1,x2,y2)=>L.push(`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#5b4a33" stroke-width="2.5" stroke-linecap="round"/>`);
+  /* vertical edges of the N and S arms / centre */
+  if(o & 1){ ln(33,0,33,33); ln(67,0,67,33); } else ln(33,33,67,33);
+  if(o & 4){ ln(33,67,33,100); ln(67,67,67,100); } else ln(33,67,67,67);
+  if(o & 2){ ln(67,33,100,33); ln(67,67,100,67); } else ln(67,33,67,67);
+  if(o & 8){ ln(0,33,33,33); ln(0,67,33,67); } else ln(33,33,33,67);
+  return L.join('');
+}
+
+let cellEls = null; /* 7x7 cell elements, for hover previews */
+
+function render(opts){
+  opts = opts || {};
+  const slide = opts.slide;
+  const grid = $('boardGrid');
+  grid.innerHTML = '';
+  cellEls = Array.from({length:7}, ()=>Array(7).fill(null));
+  const human = state.players[0];
+  const isHumanTurn = state.current===0 && state.winners===null && !busy;
+  const legal = legalInserts(state);
+  const collected = new Set(state.players.flatMap(p=>p.found));
+  const reach = (state.phase==='move' && isHumanTurn)
+    ? bfs(state, human.row, human.col) : null;
+  /* every player's current objective is publicly marked in their colour
+     (a deliberate deviation from the original's hidden cards) */
+  const humanTarget = currentTargetId(human);
+  const targetMarks = []; /* {cell:[r,c] or 'spare', color, delay} */
+  if(state.winners===null)
+    state.players.forEach((p,i)=>{
+      if(p.done) return;
+      const tid = currentTargetId(p);
+      const cellPos = tid===null ? p.start : findTreasure(state, tid);
+      targetMarks.push({cell: cellPos || 'spare', color:p.color, delay:i*0.35});
+    });
+
+  /* arrows */
+  const arrowDefs = [
+    ...[1,3,5].map(i => ({side:'N', index:i, glyph:'▼', gr:1,    gc:i+2})),
+    ...[1,3,5].map(i => ({side:'S', index:i, glyph:'▲', gr:9,    gc:i+2})),
+    ...[1,3,5].map(i => ({side:'W', index:i, glyph:'▶', gr:i+2,  gc:1})),
+    ...[1,3,5].map(i => ({side:'E', index:i, glyph:'◀', gr:i+2,  gc:9})),
+  ];
+  for(const a of arrowDefs){
+    const div = document.createElement('div');
+    div.className = 'arrow';
+    div.style.gridRow = a.gr; div.style.gridColumn = a.gc;
+    const isLegal = legal.some(l => l.side===a.side && l.index===a.index);
+    if(!isLegal){
+      div.textContent = '✕';
+      div.classList.add('forbidden');
+      div.title = "Not allowed: this would undo the previous push";
+    } else {
+      div.textContent = a.glyph;
+      const lineWord = (a.side==='N'||a.side==='S') ? 'column' : 'row';
+      div.title = `Push the spare tile into this ${lineWord}`;
+      if(!(isHumanTurn && state.phase==='push')) div.classList.add('inactive');
+      else {
+        div.onclick = () => humanPush(a.side, a.index);
+        /* hover: preview which line this push would shift */
+        div.onmouseenter = () => setLinePreview(a, true);
+        div.onmouseleave = () => setLinePreview(a, false);
+      }
+    }
+    if(state.lastInsert && state.lastInsert.side===a.side && state.lastInsert.index===a.index)
+      div.classList.add('used');
+    grid.appendChild(div);
+  }
+
+  /* edge cells of legal insert lines are click-to-push targets */
+  const entryMap = {};
+  if(isHumanTurn && state.phase==='push')
+    for(const ins of legal){
+      const e = ins.side==='N' ? [0,ins.index] : ins.side==='S' ? [6,ins.index]
+              : ins.side==='W' ? [ins.index,0] : [ins.index,6];
+      entryMap[e[0]+','+e[1]] = ins;
+    }
+
+  /* deal animation: movable tiles land in random order after the fixed grid */
+  let dealDelays = null;
+  if(opts.deal){
+    const keys = [];
+    for(let r=0;r<7;r++) for(let c=0;c<7;c++)
+      if(!state.board[r][c].fixed) keys.push(r+','+c);
+    for(let i=keys.length-1;i>0;i--){
+      const j = Math.floor(Math.random()*(i+1));
+      [keys[i],keys[j]] = [keys[j],keys[i]];
+    }
+    dealDelays = {};
+    keys.forEach((k,i)=> dealDelays[k] = 0.35 + i*0.045);
+  }
+
+  /* board cells */
+  for(let r=0;r<7;r++) for(let c=0;c<7;c++){
+    const cell = document.createElement('div');
+    cell.className = 'cell';
+    cell.style.gridRow = r+2; cell.style.gridColumn = c+2;
+    if(opts.deal){
+      if(state.board[r][c].fixed){
+        cell.classList.add('dealFixed');
+        cell.style.animationDelay = (Math.random()*0.25)+'s';
+      } else {
+        cell.classList.add('deal');
+        cell.style.animationDelay = dealDelays[r+','+c]+'s';
+      }
+    }
+    cell.innerHTML = tileSVG(state.board[r][c], collected);
+    cellEls[r][c] = cell;
+    const ins = entryMap[r+','+c];
+    if(ins){
+      cell.classList.add('pushable');
+      cell.title = 'Click to push the spare tile in here';
+      cell.onclick = () => humanPush(ins.side, ins.index);
+      cell.onmouseenter = () => setLinePreview(ins, true);
+      cell.onmouseleave = () => setLinePreview(ins, false);
+    }
+    /* home corner rings */
+    for(const p of state.players)
+      if(p.start[0]===r && p.start[1]===c){
+        const ring = document.createElement('div');
+        ring.className='homeRing'; ring.style.borderColor=p.color;
+        cell.appendChild(ring);
+      }
+    /* pawns: rest on the path arm they entered from (centre fallback) */
+    state.players.forEach((p,i)=>{
+      if(p.row===r && p.col===c && i!==opts.hidePawn){
+        const [tf,lf] = pawnSpot(i, state.board[r][c]);
+        const d = document.createElement('div');
+        d.className='pawn'; d.style.background=p.color;
+        d.style.left = `calc(${(lf*100+NUDGE[i][1]).toFixed(1)}% - 11%)`;
+        d.style.top  = `calc(${(tf*100+NUDGE[i][0]).toFixed(1)}% - 11%)`;
+        cell.appendChild(d);
+      }
+    });
+    /* pulse rings on each player's objective, in their colour */
+    for(const tm of targetMarks){
+      if(tm.cell!=='spare' && tm.cell[0]===r && tm.cell[1]===c){
+        for(const off of [0, 1.3]){
+          const ring = document.createElement('div');
+          ring.className = 'targetRing';
+          ring.style.color = tm.color;
+          ring.style.animationDelay = (tm.delay+off)+'s';
+          cell.appendChild(ring);
+        }
+      }
+    }
+    /* last pawn move: from (dashed) / to (solid) in the mover's colour */
+    if(uiLastMove){
+      const same = uiLastMove.from[0]===uiLastMove.to[0] && uiLastMove.from[1]===uiLastMove.to[1];
+      if(!same && uiLastMove.from[0]===r && uiLastMove.from[1]===c){
+        const m=document.createElement('div'); m.className='mark movefrom';
+        m.style.color=uiLastMove.color; cell.appendChild(m);
+      }
+      if(uiLastMove.to[0]===r && uiLastMove.to[1]===c){
+        const m=document.createElement('div'); m.className='mark moveto';
+        m.style.color=uiLastMove.color; cell.appendChild(m);
+      }
+    }
+    /* slide-in animation for the line that was just pushed */
+    if(slide){
+      const inLine = (slide.side==='N'||slide.side==='S') ? c===slide.index : r===slide.index;
+      if(inLine) cell.classList.add('slide'+slide.side);
+    }
+    if(reach && reach.set[r][c]){
+      cell.classList.add('reach');
+      cell.onclick = () => humanMove(r,c);
+    }
+    grid.appendChild(cell);
+  }
+
+  /* sidebar */
+  const pl = $('players'); pl.innerHTML='';
+  state.players.forEach((p,i)=>{
+    const row = document.createElement('div');
+    row.className = 'playerRow' + (state.current===i && state.winners===null ? ' active':'');
+    const stack = p.found.map(()=>'<span class="mcard"></span>').join('');
+    const names = p.found.map(t=>TREASURES[t].name).join(', ') || 'No treasures yet';
+    const streak = streaks[i]>=2 ? ` <span title="collect streak">🔥${streaks[i]}</span>` : '';
+    const flag = p.done ? ' 🏁' : '';
+    row.innerHTML = `<div class="pdot" style="background:${p.color}"></div>
+      <span>${p.name}${i===0?' (You)':''}${flag}${streak}</span>
+      <span class="pfound" title="${names}"><span class="cardStack">${stack}</span>${p.found.length}/${p.cards.length}</span>`;
+    pl.appendChild(row);
+  });
+
+  const target = currentTargetId(human);
+  if(state.winners!==null){
+    const win0 = state.winners.includes(0);
+    $('cardEmoji').textContent = state.winners.length>1 ? '🤝' : (win0 ? '🏆' : '🤖');
+    $('cardName').textContent  = resultText();
+  } else if(human.done){
+    $('cardEmoji').textContent = '🏁';
+    $('cardName').textContent  = 'Finished! Waiting for the round to end…';
+  } else if(target===null){
+    $('cardEmoji').textContent = '🏠';
+    $('cardName').textContent  = 'Return to your start corner!';
+  } else {
+    $('cardEmoji').textContent = TREASURES[target].emoji;
+    $('cardName').textContent  = TREASURES[target].name;
+  }
+
+  const sw = $('spareWrap');
+  sw.innerHTML = tileSVG(state.spare, collected);
+  sw.classList.remove('deal'); sw.style.animationDelay = '';
+  if(opts.deal){
+    sw.classList.add('deal');
+    sw.style.animationDelay = '1.9s'; /* after the last board tile lands */
+  }
+  for(const tm of targetMarks) if(tm.cell==='spare'){
+    for(const off of [0, 1.3]){
+      const ring = document.createElement('div');
+      ring.className = 'targetRing';
+      ring.style.color = tm.color;
+      ring.style.animationDelay = (tm.delay+off)+'s';
+      $('spareWrap').appendChild(ring);
+    }
+  }
+
+  /* treasure tracker: bright = not yet seen by anyone (possible AI target) */
+  const foundBy = new Map();
+  state.players.forEach(p => p.found.forEach(t => foundBy.set(t, p.color)));
+  $('tracker').innerHTML = TREASURES.map((t,i)=>{
+    const seen = foundBy.has(i);
+    const cls = 'tr' + (seen?' seen':'') + (i===humanTarget?' target':'');
+    const dot = seen ? `<span class="dot" style="background:${foundBy.get(i)}"></span>` : '';
+    return `<span class="${cls}" title="${t.name}${seen?' (found)':i===humanTarget?' (your target)':' (not yet seen)'}">${t.emoji}${dot}</span>`;
+  }).join('');
+
+  let hint = '';
+  if(state.winners!==null) hint = resultText() + (state.winners.includes(0) ? ' 🎉' : '');
+  else if(dealing) hint = 'Shuffling the maze…';
+  else if(busy) hint = `${state.players[state.current].name} is thinking…`;
+  else if(state.phase==='push') hint = 'Rotate the spare tile, then click an arrow to push it in.';
+  else hint = 'Click a highlighted square to move (your own square = stay).';
+  $('hint').textContent = hint;
+
+  $('log').innerHTML = logLines.slice(-40).map(l=>`<div>${l}</div>`).reverse().join('');
+}
+
+function log(msg){ logLines.push(msg); }
+
+function resultText(){
+  const names = state.winners.map(i => i===0 ? 'You' : state.players[i].name);
+  if(names.length>1) return 'Draw: ' + names.join(' & ');
+  return names[0]==='You' ? 'You win!' : names[0] + ' wins!';
+}
+
+function setLinePreview(a, on){
+  if(!cellEls) return;
+  const vertical = (a.side==='N'||a.side==='S');
+  for(let i=0;i<7;i++){
+    const cell = vertical ? cellEls[i][a.index] : cellEls[a.index][i];
+    if(cell) cell.classList.toggle('previewLine', on);
+  }
+}
+
+/* grid-pixel helpers for overlay animations.
+   EDGE_F must match the --edge factor in CSS. */
+const EDGE_F = 0.38;
+function gridMetrics(){
+  const w = $('boardGrid').getBoundingClientRect().width;
+  const cs = w/(7 + 2*EDGE_F);
+  return {cs, edge: cs*EDGE_F};
+}
+
+/* Glide a pawn through corridor centres, landing on the arm it entered from. */
+const GLIDE_MS = 260;
+function animatePawnMove(idx, path, done){
+  if(!path || path.length<2){ done(); return; }
+  render({hidePawn: idx});
+  const grid = $('boardGrid');
+  const {cs, edge} = gridMetrics();
+  const pw = cs*0.22;
+  const nud = NUDGE[idx];
+  /* side through which the pawn enters its final tile */
+  const [pr,pc] = path[path.length-2], [fr,fc] = path[path.length-1];
+  const finalArm = fr-pr===1 ? 'N' : fr-pr===-1 ? 'S' : fc-pc===1 ? 'W' : 'E';
+  const el = document.createElement('div');
+  el.className = 'pawn glide';
+  el.style.background = state.players[idx].color;
+  el.style.width = pw+'px'; el.style.height = pw+'px';
+  const place = ([r,c], frac)=>{ /* frac = [topF,leftF] within the cell */
+    el.style.left = edge + c*cs + cs*(frac[1]+nud[1]/100) - pw/2 + 'px';
+    el.style.top  = edge + r*cs + cs*(frac[0]+nud[0]/100) - pw/2 + 'px';
+  };
+  place(path[0], pawnSpot(idx, state.board[path[0][0]][path[0][1]]));
+  grid.appendChild(el);
+  let i = 1;
+  const step = ()=>{
+    place(path[i], i===path.length-1 ? ARMPOS[finalArm] : [0.5,0.5]);
+    i++;
+    if(i < path.length) setTimeout(step, GLIDE_MS);
+    else setTimeout(()=>{ pawnArms[idx]=finalArm; el.remove(); done(); }, GLIDE_MS+80);
+  };
+  setTimeout(step, 80); /* let the initial position paint first */
+}
+
+function spawnCollectFX(r, c, emoji){
+  const grid = $('boardGrid');
+  const {cs, edge} = gridMetrics();
+  const burst = document.createElement('div');
+  burst.className = 'burst';
+  burst.style.left = edge + c*cs+'px'; burst.style.top = edge + r*cs+'px';
+  burst.style.width = cs+'px'; burst.style.height = cs+'px';
+  const fx = document.createElement('div');
+  fx.className = 'collectFX';
+  fx.textContent = emoji;
+  fx.style.left = edge + (c+0.26)*cs+'px'; fx.style.top = edge + (r+0.2)*cs+'px';
+  grid.appendChild(burst); grid.appendChild(fx);
+  setTimeout(()=>{ burst.remove(); fx.remove(); }, 1250);
+}
+
+function describeEvent(ev){
+  const p = state.players[ev.player];
+  const who = ev.player===0 ? 'You' : p.name;
+  if(ev.collected!==null) log(`${who} found ${TREASURES[ev.collected].emoji} ${TREASURES[ev.collected].name}!`);
+  if(ev.finished) log(`🏁 ${who} collected everything and returned home!`);
+  if(ev.gameOver) log(`🏆 Game over — ${resultText()}`);
+}
+
+function humanPush(side, index){
+  if(busy || state.phase!=='push' || state.current!==0 || state.winners!==null) return;
+  uiLastMove = null;
+  applyPush(state, {side,index}, state.spare.open);
+  busy = true;                      /* input locked while the line slides */
+  render({slide:{side, index}});
+  setTimeout(()=>{ busy=false; render(); }, 820);
+}
+
+function humanMove(r, c){
+  if(busy || state.phase!=='move' || state.current!==0 || state.winners!==null) return;
+  const me = state.players[0];
+  const from = [me.row, me.col];
+  const path = pathTo(bfs(state, from[0], from[1]), [r,c]);
+  const ev = applyMove(state, r, c);
+  uiLastMove = {from, to:[r,c], color:me.color};
+  busy = true;
+  animatePawnMove(0, path, ()=>{
+    busy = false;
+    finishMove(ev, [r,c]);
+  });
+}
+
+function finishMove(ev, to){
+  describeEvent(ev);
+  if(ev.collected!==null){
+    streaks[ev.player]++;
+    if(streaks[ev.player]>=2)
+      log(`🔥 ${ev.player===0?'You are':state.players[ev.player].name+' is'} on a ${streaks[ev.player]}-treasure streak!`);
+  } else streaks[ev.player]=0;
+  render();
+  if(ev.collected!==null){
+    spawnCollectFX(to[0], to[1], TREASURES[ev.collected].emoji);
+    if(streaks[ev.player]>=2) spawnStreakFX(to[0], to[1], streaks[ev.player]);
+  }
+  if(state.winners===null){
+    /* pause to enjoy the collect effect before the next turn */
+    setTimeout(runAITurns, ev.collected!==null ? 1250 : 250);
+  }
+}
+
+function spawnStreakFX(r, c, n){
+  const grid = $('boardGrid');
+  const {cs, edge} = gridMetrics();
+  const fx = document.createElement('div');
+  fx.className = 'streakFX';
+  fx.textContent = `🔥 ×${n} streak!`;
+  fx.style.left = edge + (c-0.3)*cs+'px';
+  fx.style.top  = edge + (r-0.1)*cs+'px';
+  grid.appendChild(fx);
+  setTimeout(()=>fx.remove(), 1550);
+}
+
+function runAITurns(){
+  if(state.winners!==null || !state.players[state.current].isAI) { render(); return; }
+  busy = true; render();
+  const choice = aiChooseMove(state, aiLevel);
+  const aiIdx = state.current;
+  setTimeout(()=>{
+    uiLastMove = null;
+    applyPush(state, choice.insert, choice.open);
+    render({slide:choice.insert});
+    setTimeout(()=>{
+      const p = state.players[aiIdx];
+      const from = [p.row, p.col];
+      const path = pathTo(bfs(state, from[0], from[1]), choice.dest);
+      const ev = applyMove(state, choice.dest[0], choice.dest[1]);
+      uiLastMove = {from, to:[...choice.dest], color:p.color};
+      animatePawnMove(aiIdx, path, ()=>{
+        busy = false;
+        finishMove(ev, choice.dest);
+      });
+    }, 1150); /* let the slide finish on screen */
+  }, 550);
+}
+
+function startGame(){
+  state = newGame(1 + numOpponents, Math.floor(Math.random()*2**31));
+  logLines = [];
+  log(`New game: you vs ${numOpponents} AI opponent${numOpponents>1?'s':''}. Good luck!`);
+  uiLastMove = null;
+  pawnArms = [null,null,null,null];
+  streaks  = [0,0,0,0];
+  $('overlay').classList.add('hidden');
+  /* deal the maze: input stays locked until the last tile lands */
+  busy = true; dealing = true;
+  render({deal:true});
+  setTimeout(()=>{ busy = false; dealing = false; render(); }, 2450);
+}
+
+document.querySelectorAll('.oppBtns button[data-n]').forEach(b=>{
+  b.onclick = ()=>{
+    document.querySelectorAll('.oppBtns button[data-n]').forEach(x=>x.classList.remove('sel'));
+    b.classList.add('sel');
+    numOpponents = +b.dataset.n;
+  };
+});
+document.querySelectorAll('.diffBtns button').forEach(b=>{
+  b.onclick = ()=>{
+    document.querySelectorAll('.diffBtns button').forEach(x=>x.classList.remove('sel'));
+    b.classList.add('sel');
+    aiLevel = b.dataset.d;
+  };
+});
+$('startBtn').onclick = startGame;
+$('newGameBtn').onclick = ()=>{ $('overlay').classList.remove('hidden'); };
+$('spareWrap').onclick = ()=>{
+  if(busy || state===null || state.phase!=='push' || state.current!==0 || state.winners!==null) return;
+  state.spare.open = rot(state.spare.open, 1);
+  render();
+};
+</script>
+</body>
+</html>
