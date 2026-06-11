@@ -123,10 +123,22 @@
   .pawn{position:absolute; width:22%; height:22%; border-radius:50%; border:2px solid #00000088;
         box-shadow:0 1px 4px #000a; pointer-events:none; transition:all .35s;}
   .homeRing{position:absolute; inset:30%; border-radius:50%; border:3px dashed; opacity:.65; pointer-events:none;}
-  #overlay{position:fixed; inset:0; background:#000a; display:flex; align-items:center; justify-content:center; z-index:10;}
-  #overlay .panel{background:var(--panel); border-radius:16px; padding:34px 44px; text-align:center; max-width:430px;}
-  #overlay h2{color:var(--accent); margin-bottom:14px;}
-  #overlay p{color:var(--dim); margin-bottom:18px; font-size:.95em; line-height:1.5;}
+  #overlay, #puzzleOverlay{position:fixed; inset:0; background:#000a; display:flex; align-items:center; justify-content:center; z-index:10;}
+  #overlay .panel, #puzzleOverlay .panel{background:var(--panel); border-radius:16px; padding:34px 44px; text-align:center; max-width:430px;}
+  #overlay h2, #puzzleOverlay h2{color:var(--accent); margin-bottom:14px;}
+  #overlay p, #puzzleOverlay p{color:var(--dim); margin-bottom:18px; font-size:.95em; line-height:1.5;}
+  /* puzzle picker + in-game puzzle panel */
+  .pzGroup{margin:12px 0 4px; text-align:left;}
+  .pzChips{display:flex; flex-wrap:wrap; gap:6px; margin-top:6px;}
+  .pzChip{min-width:34px; padding:5px 7px; border-radius:7px; background:#1f2433; color:var(--text);
+       border:2px solid #444c63; cursor:pointer; font-size:.82em; font-weight:600;}
+  .pzChip:hover{border-color:var(--accent);}
+  .pzChip.solved{background:#3a3217; color:var(--accent); border-color:var(--accent);}
+  #puzzleBox{background:#1f2433; border-radius:10px; padding:12px; text-align:center;}
+  #puzzleGoal{font-size:.88em; margin:8px 0; line-height:1.45;}
+  #puzzleStats{font-size:.8em; color:var(--dim); margin-bottom:8px;}
+  #puzzleBtns{display:flex; flex-wrap:wrap; gap:6px; justify-content:center;}
+  #puzzleBtns button{font-size:.8em; padding:6px 9px;}
   .oppBtns{display:flex; gap:10px; justify-content:center; margin-bottom:20px;}
   .oppBtns button{background:#1f2433; color:var(--text); border:2px solid #444c63; min-width:64px;}
   .oppBtns button.sel{border-color:var(--accent); color:var(--accent);}
@@ -189,7 +201,28 @@
     <div class="label">Spare tile — click to rotate</div>
     <div id="spareWrap"></div>
   </div>
+  <div id="puzzleBox" class="hidden">
+    <div class="label">Puzzle</div>
+    <div id="puzzleGoal"></div>
+    <div id="puzzleStats"></div>
+    <div id="puzzleBtns">
+      <button id="pzUndoBtn" class="hidden">Undo</button>
+      <button id="pzRetryBtn">Retry</button>
+      <button id="pzSolBtn" class="hidden">Show solution</button>
+      <button id="pzNextBtn" class="hidden">Next puzzle</button>
+      <button id="pzExitBtn">Exit</button>
+    </div>
+  </div>
   <div id="hint"></div>
+</div>
+
+<div id="puzzleOverlay" class="hidden">
+  <div class="panel" style="max-width:640px; max-height:82vh; overflow-y:auto;">
+    <h2>PUZZLES</h2>
+    <p>Every puzzle has exactly one correct push. Gold = solved.</p>
+    <div id="puzzleList"></div>
+    <button id="puzzleBackBtn" style="margin-top:14px;">Back</button>
+  </div>
 </div>
 
 <div id="overlay">
@@ -209,6 +242,8 @@
       <button data-d="hard" class="sel">Hard</button>
     </div>
     <button id="startBtn">Start Game</button>
+    <button id="puzzleModeBtn" style="margin-left:10px; background:#1f2433; color:var(--accent); border:2px solid var(--accent);">Puzzle Mode</button>
+    <button id="dailyBtn" style="margin-left:10px; background:#1f2433; color:#7ee087; border:2px solid #7ee087;">📅 Daily</button>
   </div>
 </div>
 
@@ -617,6 +652,8 @@ if(typeof module!=='undefined') module.exports = {
 };
 </script>
 
+<script src="puzzles.js"></script>
+
 <script>
 /* ============================================================
    UI LAYER
@@ -630,6 +667,7 @@ let uiLastMove = null;     /* {from:[r,c], to:[r,c], color} — pawn move highli
 let pawnArms = [null,null,null,null]; /* which path-arm each pawn rests on */
 let streaks  = [0,0,0,0];             /* consecutive treasure-collecting turns */
 let dealing  = false;                 /* true during the game-start deal animation */
+let puzzle   = null;                  /* active puzzle: {data, base, attempts, stage, showSol, solved} */
 
 /* pawn resting spots: [topFrac, leftFrac] of the tile */
 const ARMPOS = {N:[0.17,0.5], E:[0.5,0.83], S:[0.83,0.5], W:[0.5,0.17]};
@@ -687,7 +725,8 @@ function render(opts){
   grid.innerHTML = '';
   cellEls = Array.from({length:7}, ()=>Array(7).fill(null));
   const human = state.players[0];
-  const isHumanTurn = state.current===0 && state.winners===null && !busy;
+  const isHumanTurn = state.current===0 && state.winners===null && !busy
+                   && !(puzzle && (puzzle.solved || puzzle.failed));
   const legal = legalInserts(state);
   const collected = new Set(state.players.flatMap(p=>p.found));
   const reach = (state.phase==='move' && isHumanTurn)
@@ -905,6 +944,8 @@ function render(opts){
   $('hint').textContent = hint;
 
   $('log').innerHTML = logLines.slice(-40).map(l=>`<div>${l}</div>`).reverse().join('');
+
+  updatePuzzleUI();
 }
 
 function log(msg){ logLines.push(msg); }
@@ -990,15 +1031,18 @@ function describeEvent(ev){
 
 function humanPush(side, index){
   if(busy || state.phase!=='push' || state.current!==0 || state.winners!==null) return;
+  if(puzzle && (puzzle.solved || puzzle.failed)) return;
+  if(puzzle) puzzle.snap = {state: cloneState(state), stage: puzzle.stage};
   uiLastMove = null;
   applyPush(state, {side,index}, state.spare.open);
   busy = true;                      /* input locked while the line slides */
   render({slide:{side, index}});
-  setTimeout(()=>{ busy=false; render(); }, 820);
+  setTimeout(()=>{ busy=false; if(puzzle) puzzleAfterPush(); else render(); }, 820);
 }
 
 function humanMove(r, c){
   if(busy || state.phase!=='move' || state.current!==0 || state.winners!==null) return;
+  if(puzzle){ puzzleMove(r, c); return; }
   const me = state.players[0];
   const from = [me.row, me.col];
   const path = pathTo(bfs(state, from[0], from[1]), [r,c]);
@@ -1042,6 +1086,7 @@ function spawnStreakFX(r, c, n){
 }
 
 function runAITurns(){
+  if(puzzle) return;
   if(state.winners!==null || !state.players[state.current].isAI) { render(); return; }
   busy = true; render();
   const choice = aiChooseMove(state, aiLevel);
@@ -1065,6 +1110,7 @@ function runAITurns(){
 }
 
 function startGame(){
+  puzzle = null;
   state = newGame(1 + numOpponents, Math.floor(Math.random()*2**31));
   logLines = [];
   log(`New game: you vs ${numOpponents} AI opponent${numOpponents>1?'s':''}. Good luck!`);
@@ -1077,6 +1123,296 @@ function startGame(){
   render({deal:true});
   setTimeout(()=>{ busy = false; dealing = false; render(); }, 2450);
 }
+
+/* ============================================================
+   PUZZLE MODE
+   Solitaire convention: the opponent never moves; you only push.
+   Checking is semantic (does your push actually work?), not a
+   comparison against the stored move — uniqueness is pre-proven.
+   ============================================================ */
+const PUZZLES_OK = typeof PUZZLES !== 'undefined';
+
+function solvedSet(){
+  try { return new Set(JSON.parse(localStorage.getItem('labyrinthPuzzlesSolved')||'[]')); }
+  catch(e){ return new Set(); }
+}
+function markSolved(id){
+  try {
+    const s = solvedSet(); s.add(id);
+    localStorage.setItem('labyrinthPuzzlesSolved', JSON.stringify([...s]));
+  } catch(e){}
+}
+
+function rebuildPuzzle(p){
+  const board = [];
+  let k = 0;
+  for(let r=0;r<7;r++){
+    const row = [];
+    for(let c=0;c<7;c++){
+      const [open, tr] = p.board[k++];
+      row.push({open, treasure: tr<0?null:tr, fixed: r%2===0 && c%2===0});
+    }
+    board.push(row);
+  }
+  const mk = (q, idx, name, color)=>({
+    idx, name, color, row:q.row, col:q.col, start:[...q.start],
+    cards: q.target<0 ? [] : [q.target], found: [],
+    turns:0, done:false, isAI: idx===1,
+  });
+  return {
+    board,
+    spare: {open: p.spare[0], treasure: p.spare[1]<0?null:p.spare[1], fixed:false},
+    /* collect puzzles are pure solitaire — Blue only appears in block puzzles */
+    players: p.type==='block1'
+      ? [mk(p.me,0,'You','#e63946'), mk(p.opp,1,'Blue','#5390d9')]
+      : [mk(p.me,0,'You','#e63946')],
+    current: 0, phase: 'push',
+    lastInsert: p.lastInsert ? {...p.lastInsert} : null,
+    winners: null, finished: [], seed: 0,
+  };
+}
+
+function puzzleGoalText(p){
+  const me = p.me.target, opp = p.opp.target;
+  const t = id => id<0 ? '🏠 your home corner' : TREASURES[id].emoji+' '+TREASURES[id].name;
+  if(p.type==='collect1') return `Find the ONLY push that lets you reach ${t(me)} this turn — then go collect it.`;
+  if(p.type==='collect2') return `${t(me)} is unreachable this turn. Find the only first push that guarantees collecting it on your second turn. Blue never moves.`;
+  return `Blue is one push away from ${t(opp)} — several ways. Find the only push that blocks them all.`;
+}
+
+function startPuzzle(p, daily){
+  puzzle = {data:p, attempts:0, stage:1, showSol:false, solved:false, failed:null, snap:null, daily:!!daily};
+  state = rebuildPuzzle(p);
+  puzzle.base = cloneState(state);
+  logLines = [];
+  log(`${daily?'📅 Daily puzzle: ':''}${p.id} — ${p.type}`);
+  uiLastMove=null;
+  pawnArms=[null,null,null,null]; streaks=[0,0,0,0];
+  $('overlay').classList.add('hidden');
+  $('puzzleOverlay').classList.add('hidden');
+  /* deal the maze in, same as a normal game */
+  busy = true; dealing = true;
+  render({deal:true});
+  setTimeout(()=>{ busy=false; dealing=false; render(); }, 2450);
+}
+
+/* my pushes helpers reused for checking */
+function pzAllPushes(s){
+  const out=[];
+  for(const insert of legalInserts(s))
+    for(const open of distinctRotations(s.spare.open)) out.push({insert, open});
+  return out;
+}
+function pzOppOptions(s){
+  const tid = currentTargetId(s.players[1]);
+  let n=0;
+  for(const ph of pzAllPushes(s)){
+    const s2 = cloneState(s);
+    applyPush(s2, ph.insert, ph.open);
+    const q = s2.players[1];
+    const g = tid===null ? q.start : findTreasure(s2, tid);
+    if(g && bfs(s2, q.row, q.col).set[g[0]][g[1]]) n++;
+  }
+  return n;
+}
+function pzStillSolvable2(s){
+  /* exists reachable cell from which some own follow-up push reaches goal */
+  const me = s.players[0];
+  const tid = currentTargetId(me);
+  const reach = bfs(s, me.row, me.col);
+  for(const ph of pzAllPushes(s)){
+    const s2 = cloneState(s);
+    applyPush(s2, ph.insert, ph.open);
+    const g = tid===null ? me.start : findTreasure(s2, tid);
+    if(!g) continue;
+    const back = bfs(s2, g[0], g[1]);
+    for(let r=0;r<7;r++) for(let c=0;c<7;c++) if(reach.set[r][c]){
+      let sr=r, sc=c;
+      const {side,index} = ph.insert;
+      if(side==='N' && c===index){ sr=r+1>6?0:r+1; }
+      else if(side==='S' && c===index){ sr=r-1<0?6:r-1; }
+      else if(side==='W' && r===index){ sc=c+1>6?0:c+1; }
+      else if(side==='E' && r===index){ sc=c-1<0?6:c-1; }
+      if(back.set[sr][sc]) return true;
+    }
+  }
+  return false;
+}
+
+function puzzleAfterPush(){
+  const p = puzzle.data;
+  const me = state.players[0];
+  const tid = currentTargetId(me);
+  const goal = tid===null ? me.start : findTreasure(state, tid);
+  if(p.type==='block1'){
+    const n = pzOppOptions(state);
+    if(n===0) puzzleSolved();
+    else puzzleFail(`Blue still has ${n} way${n>1?'s':''} through.`);
+    return;
+  }
+  const reach = bfs(state, me.row, me.col);
+  const canReach = !!(goal && reach.set[goal[0]][goal[1]]);
+  if(p.type==='collect1' || (p.type==='collect2' && puzzle.stage===2)){
+    if(canReach) render(); /* move phase: click the target */
+    else puzzleFail('Your target is not reachable after that push.');
+  } else {
+    /* collect2, first push */
+    if(pzStillSolvable2(state)) render(); /* move phase */
+    else puzzleFail('That push leaves no guaranteed way to collect next turn.');
+  }
+}
+
+function puzzleMove(r, c){
+  if(puzzle.solved || puzzle.failed) return;
+  puzzle.snap = {state: cloneState(state), stage: puzzle.stage};
+  const me = state.players[0];
+  const from = [me.row, me.col];
+  const path = pathTo(bfs(state, from[0], from[1]), [r,c]);
+  const tid = currentTargetId(me);
+  me.row=r; me.col=c;
+  const collected = tid!==null && state.board[r][c].treasure===tid;
+  const homeGoal = tid===null && r===me.start[0] && c===me.start[1];
+  if(collected) me.found.push(tid);
+  state.phase='push'; state.current=0;
+  uiLastMove = {from, to:[r,c], color:me.color};
+  busy = true;
+  animatePawnMove(0, path, ()=>{
+    busy = false;
+    if(collected || homeGoal){
+      render();
+      if(collected) spawnCollectFX(r, c, TREASURES[tid].emoji);
+      puzzleSolved();
+    } else if(puzzle.data.type==='collect2' && puzzle.stage===1){
+      puzzle.stage = 2;
+      log('First turn done — now finish it.');
+      render();
+    } else {
+      puzzleFail("That move doesn't reach the objective.");
+    }
+  });
+}
+
+function puzzleSolved(){
+  puzzle.solved = true;
+  puzzle.showSol = false;
+  log(`✅ Solved in ${puzzle.attempts+1} attempt${puzzle.attempts?'s':''}!`);
+  markSolved(puzzle.data.id);
+  render();
+}
+
+/* Failure leaves the board as-is so the player can study what went
+   wrong; Undo steps back to just before their last push/move. */
+function puzzleFail(msg){
+  puzzle.attempts++;
+  puzzle.failed = msg;
+  log('❌ ' + msg);
+  render();
+}
+
+function nextUnsolved(){
+  const s = solvedSet();
+  const list = PUZZLES.puzzles;
+  const i = list.findIndex(q=>q.id===puzzle.data.id);
+  for(let k=1;k<=list.length;k++){
+    const cand = list[(i+k)%list.length];
+    if(!s.has(cand.id)) return cand;
+  }
+  return list[(i+1)%list.length];
+}
+
+function updatePuzzleUI(){
+  const box = $('puzzleBox');
+  if(!puzzle){ box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  $('puzzleGoal').textContent = puzzleGoalText(puzzle.data);
+  $('puzzleStats').textContent = `${puzzle.daily?'📅 Daily · ':''}${puzzle.data.id} · attempts: ${puzzle.attempts}`;
+  $('pzSolBtn').classList.toggle('hidden', puzzle.solved || puzzle.attempts<3);
+  $('pzNextBtn').classList.toggle('hidden', !puzzle.solved);
+  $('pzUndoBtn').classList.toggle('hidden', !puzzle.failed);
+  /* hint override */
+  if(puzzle.solved) $('hint').textContent = '✅ Solved! Try the next one.';
+  else if(puzzle.failed) $('hint').textContent = '❌ ' + puzzle.failed + ' Study the board, then Undo.';
+  else if(puzzle.showSol) $('hint').textContent = 'Solution: push the highlighted line (spare already rotated).';
+  else if(!busy && state.phase==='push') $('hint').textContent = 'Rotate the spare, then push. Only one push is right.';
+  /* show-solution highlight */
+  if(puzzle.showSol && cellEls && !puzzle.solved){
+    const ins = puzzle.data.solution.insert;
+    const vertical = ins.side==='N'||ins.side==='S';
+    for(let i=0;i<7;i++){
+      const cell = vertical ? cellEls[i][ins.index] : cellEls[ins.index][i];
+      if(cell) cell.classList.add('previewLine');
+    }
+  }
+}
+
+function openPuzzlePicker(){
+  if(!PUZZLES_OK){ alert('puzzles.js not found next to labyrinth.html'); return; }
+  const s = solvedSet();
+  const groups = [
+    ['Collect in 1 — find the only push that reaches your treasure', p=>p.type==='collect1'],
+    ['Collect in 2 — plan two of your turns ahead', p=>p.type==='collect2'],
+    ['Block! — stop Blue from reaching their treasure', p=>p.type==='block1'],
+  ];
+  $('puzzleList').innerHTML = groups.map(([title, f])=>{
+    const items = PUZZLES.puzzles.filter(f);
+    if(!items.length) return '';
+    const chips = items.map((p,i)=>
+      `<button class="pzChip${s.has(p.id)?' solved':''}" data-pid="${p.id}"
+        title="${s.has(p.id)?'solved':''}">${i+1}</button>`).join('');
+    return `<div class="pzGroup"><div class="label">${title}</div><div class="pzChips">${chips}</div></div>`;
+  }).join('');
+  $('puzzleList').querySelectorAll('.pzChip').forEach(b=>{
+    b.onclick = ()=> startPuzzle(PUZZLES.puzzles.find(p=>p.id===b.dataset.pid));
+  });
+  $('overlay').classList.add('hidden');
+  $('puzzleOverlay').classList.remove('hidden');
+}
+
+$('puzzleModeBtn').onclick = openPuzzlePicker;
+$('puzzleBackBtn').onclick = ()=>{
+  $('puzzleOverlay').classList.add('hidden');
+  $('overlay').classList.remove('hidden');
+};
+$('pzUndoBtn').onclick = ()=>{
+  if(!puzzle || busy || !puzzle.failed || !puzzle.snap) return;
+  state = cloneState(puzzle.snap.state);
+  puzzle.stage = puzzle.snap.stage;
+  puzzle.failed = null;
+  uiLastMove = null;
+  pawnArms = [null,null,null,null];
+  log('Undone — try again.');
+  render();
+};
+$('pzRetryBtn').onclick = ()=>{
+  if(!puzzle || busy) return;
+  state = cloneState(puzzle.base);
+  puzzle.stage=1; puzzle.solved=false; puzzle.showSol=false; puzzle.failed=null;
+  uiLastMove=null; pawnArms=[null,null,null,null];
+  log('Position reset.');
+  render();
+};
+$('pzSolBtn').onclick = ()=>{
+  if(!puzzle || busy || puzzle.solved) return;
+  state = cloneState(puzzle.base);
+  puzzle.stage=1; puzzle.showSol=true; puzzle.failed=null;
+  state.spare.open = puzzle.data.solution.open;
+  uiLastMove=null; pawnArms=[null,null,null,null];
+  log('💡 Spare rotated to the right orientation — push the highlighted line.');
+  render();
+};
+$('dailyBtn').onclick = ()=>{
+  if(!PUZZLES_OK){ alert('puzzles.js not found next to labyrinth.html'); return; }
+  const d = new Date();
+  const key = d.getFullYear()*10000 + (d.getMonth()+1)*100 + d.getDate();
+  const idx = (key * 48271) % PUZZLES.puzzles.length;
+  startPuzzle(PUZZLES.puzzles[idx], true);
+};
+$('pzNextBtn').onclick = ()=>{ if(puzzle && puzzle.solved) startPuzzle(nextUnsolved()); };
+$('pzExitBtn').onclick = ()=>{
+  puzzle = null;
+  render();
+  openPuzzlePicker(); /* rebuild list so solved marks are fresh */
+};
 
 document.querySelectorAll('.oppBtns button[data-n]').forEach(b=>{
   b.onclick = ()=>{
@@ -1096,6 +1432,7 @@ $('startBtn').onclick = startGame;
 $('newGameBtn').onclick = ()=>{ $('overlay').classList.remove('hidden'); };
 $('spareWrap').onclick = ()=>{
   if(busy || state===null || state.phase!=='push' || state.current!==0 || state.winners!==null) return;
+  if(puzzle && (puzzle.solved || puzzle.failed)) return;
   state.spare.open = rot(state.spare.open, 1);
   render();
 };
