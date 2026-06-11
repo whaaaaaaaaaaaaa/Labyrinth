@@ -1,22 +1,13 @@
 #!/usr/bin/env node
 /* ============================================================
-   LABYRINTH PUZZLE MINER
-   Simulates hard-vs-hard self-play and mines positions that make
-   good puzzles, chess-style: the solution must be UNIQUE.
-
-   Puzzle types:
-   - collect1: exactly one push(+rotation) lets the mover reach
-     their target this turn.
-   - collect2: no push reaches the target this turn, but exactly
-     one first push preserves a guaranteed two-turn collection
-     (solitaire convention: opponent replies are ignored).
-   - block1: the opponent is about to finish; exactly one push
-     cuts off ALL of their reaching replies.
-
-   Usage:
-     node generate_puzzles.js --seeds 1-10 --out puzzles_part.json
-   The engine is loaded from ../labyrinth.html, or from the path in
-   the ENGINE environment variable (used for testing).
+   LABYRINTH PUZZLE MINER v2
+   - accepts 1..3 equally valid solutions (stored in `sols`,
+     count in `solutions`, primary in `solution`)
+   - flags puzzles whose every solution wraps a pawn off the
+     board (`wrap: true`) so assembly can cap them at <20%
+   - collect1 quality filter: every solution's walking path must
+     bend at least twice (no straight-line trivia)
+   Usage: node generate_puzzles.js --seeds 1-10 --out part.json
    ============================================================ */
 const fs = require('fs'), path = require('path'), vm = require('vm');
 
@@ -24,14 +15,12 @@ function loadEngine(){
   if(process.env.ENGINE) return require(process.env.ENGINE);
   const html = fs.readFileSync(path.join(__dirname, '..', 'labyrinth.html'), 'utf8');
   const m = html.match(/<script id="engine">([\s\S]*?)<\/script>/);
-  if(!m) throw new Error('engine script not found in labyrinth.html');
+  if(!m) throw new Error('engine script not found');
   const mod = {exports:{}};
   vm.runInNewContext(m[1], {module: mod, console});
   return mod.exports;
 }
 const E = loadEngine();
-
-/* ---------- helpers built on exported engine primitives ---------- */
 
 function shiftCell(cell, insert){
   let [r,c] = cell;
@@ -42,7 +31,6 @@ function shiftCell(cell, insert){
   else if(side==='E' && r===index){ c--; if(c<0) c=6; }
   return [r,c];
 }
-
 function allPushes(state){
   const out = [];
   for(const insert of E.legalInserts(state))
@@ -50,28 +38,70 @@ function allPushes(state){
       out.push({insert, open});
   return out;
 }
+/* a "solution" is a distinct push arrow; rotations group under it */
+function distinctIns(list){
+  return new Set(list.map(h=>h.insert.side+h.insert.index)).size;
+}
+function groupSols(sols){
+  const map = new Map();
+  for(const s of sols){
+    const k = s.insert.side + s.insert.index;
+    if(!map.has(k)) map.set(k, {insert: s.insert, opens: [], dest: s.dest||null, wrap: s.wrap});
+    map.get(k).opens.push(s.open);
+  }
+  return [...map.values()];
+}
 
-/* pushes after which player pIdx can reach their current objective */
-function reachingPushes(state, pIdx){
+function pathTurns(p){
+  let t = 0;
+  for(let i=2;i<p.length;i++){
+    if(p[i][0]-p[i-1][0] !== p[i-1][0]-p[i-2][0] ||
+       p[i][1]-p[i-1][1] !== p[i-1][1]-p[i-2][1]) t++;
+  }
+  return t;
+}
+
+/* full-detail solutions for "reach goal this turn" */
+function reachingPushes(state, pIdx, cap){
   const tid = E.currentTargetId(state.players[pIdx]);
+  const p0 = state.players[pIdx];
   const hits = [];
   for(const ph of allPushes(state)){
     const s2 = E.cloneState(state);
     E.applyPush(s2, ph.insert, ph.open);
     const q = s2.players[pIdx];
     const g = tid===null ? q.start : E.findTreasure(s2, tid);
-    if(g && E.bfs(s2, q.row, q.col).set[g[0]][g[1]]){
-      const reach = E.bfs(s2, q.row, q.col);
-      hits.push({insert: ph.insert, open: ph.open, dest: g, dist: reach.dist[g[0]][g[1]]});
+    if(!g) continue;
+    const reach = E.bfs(s2, q.row, q.col);
+    if(reach.set[g[0]][g[1]]){
+      const walk = E.pathTo(reach, g);
+      hits.push({
+        insert: ph.insert, open: ph.open, dest: g,
+        dist: reach.dist[g[0]][g[1]],
+        turns: pathTurns(walk),
+        wrap: Math.abs(q.row-p0.row)===6 || Math.abs(q.col-p0.col)===6,
+      });
+      if(cap && distinctIns(hits)>cap) return hits;
     }
   }
   return hits;
 }
+function countReaching(state, pIdx){
+  const tid = E.currentTargetId(state.players[pIdx]);
+  let n = 0;
+  for(const ph of allPushes(state)){
+    const s2 = E.cloneState(state);
+    E.applyPush(s2, ph.insert, ph.open);
+    const q = s2.players[pIdx];
+    const g = tid===null ? q.start : E.findTreasure(s2, tid);
+    if(g && E.bfs(s2, q.row, q.col).set[g[0]][g[1]]) n++;
+  }
+  return n;
+}
 
-/* first pushes that preserve a guaranteed own-2-turn collection;
-   early-exits as soon as uniqueness is impossible (>limit found) */
-function twoTurnPushes(state, meIdx, limit){
+function twoTurnPushes(state, meIdx, cap){
   const tid = E.currentTargetId(state.players[meIdx]);
+  const me0 = state.players[meIdx];
   const works = [];
   for(const ph of allPushes(state)){
     const s2 = E.cloneState(state);
@@ -85,59 +115,64 @@ function twoTurnPushes(state, meIdx, limit){
       E.applyPush(s3, ph2.insert, ph2.open);
       const g = tid===null ? me.start : E.findTreasure(s3, tid);
       if(!g) continue;
-      const back = E.bfs(s3, g[0], g[1]); /* connectivity is symmetric */
+      const back = E.bfs(s3, g[0], g[1]);
       for(let r=0;r<7;r++) for(let c=0;c<7;c++) if(reach.set[r][c]){
         const [sr,sc] = shiftCell([r,c], ph2.insert);
         if(back.set[sr][sc]){ ok = true; break outer; }
       }
     }
     if(ok){
-      works.push(ph);
-      if(works.length > limit) return works;
+      works.push({insert: ph.insert, open: ph.open, dest: null,
+        wrap: Math.abs(me.row-me0.row)===6 || Math.abs(me.col-me0.col)===6});
+      if(cap && distinctIns(works)>cap) return works;
     }
   }
   return works;
 }
 
-/* my pushes after which the opponent has ZERO reaching replies */
 function blockingPushes(state, oppIdx){
+  const o0 = state.players[oppIdx];
   const blocks = [];
   let maxThreat = 0;
   for(const ph of allPushes(state)){
     const s2 = E.cloneState(state);
     E.applyPush(s2, ph.insert, ph.open);
-    const oppHits = reachingPushes(s2, oppIdx).length;
-    if(oppHits===0) blocks.push(ph);
-    if(oppHits>maxThreat) maxThreat = oppHits;
+    const n = countReaching(s2, oppIdx);
+    if(n===0){
+      const q = s2.players[oppIdx];
+      blocks.push({insert: ph.insert, open: ph.open, dest: null,
+        wrap: Math.abs(q.row-o0.row)===6 || Math.abs(q.col-o0.col)===6});
+    }
+    if(n>maxThreat) maxThreat = n;
   }
   return {blocks, maxThreat};
 }
 
-/* ---------- serialization (players normalized: [0]=mover) ---------- */
-
 function snapshotPlayer(p, tid){
   return {row:p.row, col:p.col, start:[...p.start], target: tid===null ? -1 : tid};
 }
-function serialize(state, type, solution, difficulty, id){
+function serialize(state, type, sols, difficulty, id){
   const meIdx = state.current;
   const oppIdx = (meIdx+1) % state.players.length;
   const me = state.players[meIdx], opp = state.players[oppIdx];
+  const groups = groupSols(sols);
   return {
     id, type, difficulty,
+    solutions: groups.length,
+    wrap: groups.every(g=>g.wrap),
     board: state.board.flat().map(t => [t.open, t.treasure===null ? -1 : t.treasure]),
     spare: [state.spare.open, state.spare.treasure===null ? -1 : state.spare.treasure],
     lastInsert: state.lastInsert ? {...state.lastInsert} : null,
     me:  snapshotPlayer(me,  E.currentTargetId(me)),
     opp: snapshotPlayer(opp, E.currentTargetId(opp)),
-    solution,
+    sols: groups,
+    solution: groups[0],
   };
 }
 function boardHash(state){
   return state.board.flat().map(t=>t.open+'.'+t.treasure).join('|')
        + '#' + state.players.map(p=>p.row+','+p.col).join('#');
 }
-
-/* ---------- mining ---------- */
 
 function mine(seedFrom, seedTo){
   const puzzles = [];
@@ -152,30 +187,21 @@ function mine(seedFrom, seedTo){
       const h = boardHash(s);
       if(!seen.has(h)){
         seen.add(h);
-        const hits = reachingPushes(s, meIdx);
-        if(hits.length===1){
-          const sol = hits[0];
-          const diff = sol.dist<=2 ? 'easy' : sol.dist<=4 ? 'medium' : 'hard';
-          puzzles.push(serialize(s, 'collect1',
-            {insert:sol.insert, open:sol.open, dest:sol.dest}, diff,
-            `c1-${seed}-${t}`));
+        const hits = reachingPushes(s, meIdx, 3);
+        if(hits.length>=1 && distinctIns(hits)<=3 && hits.every(x=>x.turns>=2)){
+          const minD = Math.min(...hits.map(x=>x.dist));
+          puzzles.push(serialize(s, 'collect1', hits,
+            minD<=3 ? 'medium' : 'hard', `c1-${seed}-${t}`));
         } else if(hits.length===0){
-          const works = twoTurnPushes(s, meIdx, 1);
-          if(works.length===1){
-            puzzles.push(serialize(s, 'collect2',
-              {insert:works[0].insert, open:works[0].open, dest:null}, 'hard',
-              `c2-${seed}-${t}`));
-          }
+          const works = twoTurnPushes(s, meIdx, 3);
+          if(works.length>=1 && distinctIns(works)<=3)
+            puzzles.push(serialize(s, 'collect2', works, 'hard', `c2-${seed}-${t}`));
         }
-        /* blocking puzzles: only when the opponent is about to finish */
         if(opp.found.length >= opp.cards.length-1){
           const {blocks, maxThreat} = blockingPushes(s, oppIdx);
-          if(blocks.length===1 && maxThreat>=3){
-            puzzles.push(serialize(s, 'block1',
-              {insert:blocks[0].insert, open:blocks[0].open, dest:null},
-              maxThreat>=8 ? 'expert' : 'hard',
-              `b1-${seed}-${t}`));
-          }
+          if(blocks.length>=1 && distinctIns(blocks)<=3 && maxThreat>=3)
+            puzzles.push(serialize(s, 'block1', blocks,
+              maxThreat>=8 ? 'expert' : 'hard', `b1-${seed}-${t}`));
         }
       }
       const ch = E.aiChooseMove(s, 'hard');
@@ -187,8 +213,6 @@ function mine(seedFrom, seedTo){
   return puzzles;
 }
 
-/* ---------- CLI ---------- */
-
 function getArg(name, dflt){
   const i = process.argv.indexOf('--'+name);
   return i>=0 ? process.argv[i+1] : dflt;
@@ -198,7 +222,8 @@ const out = getArg('out', 'puzzles_part.json');
 const t0 = Date.now();
 const puzzles = mine(a, b);
 fs.writeFileSync(out, JSON.stringify(puzzles));
-console.log(`seeds ${a}-${b}: ${puzzles.length} puzzles (`+
-  puzzles.filter(p=>p.type==='collect1').length+' c1, '+
-  puzzles.filter(p=>p.type==='collect2').length+' c2, '+
-  puzzles.filter(p=>p.type==='block1').length+` b1) in ${((Date.now()-t0)/1000).toFixed(1)}s`);
+const stat = ty => {
+  const l = puzzles.filter(p=>p.type===ty);
+  return `${l.length} ${ty} (${l.filter(p=>p.wrap).length} wrap, ${l.filter(p=>p.solutions>1).length} multi-line)`;
+};
+console.log(`seeds ${a}-${b}: ${stat('collect1')}, ${stat('collect2')}, ${stat('block1')} in ${((Date.now()-t0)/1000).toFixed(1)}s`);

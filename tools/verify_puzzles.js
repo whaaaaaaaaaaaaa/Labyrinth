@@ -1,9 +1,9 @@
-#!/usr/bin/env node
-/* Independent puzzle verifier: rebuilds each puzzle from its JSON
-   serialization alone and re-proves the solution is correct AND unique.
-   Usage: node verify_puzzles.js puzzles.json */
-const fs = require('fs'), path = require('path'), vm = require('vm');
-
+/* Independent verifier v2: rebuilds each puzzle from JSON alone and
+   re-proves: solution set is exactly `sols` (count + membership),
+   collect1 paths all bend >=2 times, block threat is real.
+   Usage: node verify2.js file.json [fromIdx] [toIdx] */
+const fs = require('fs');
+const path = require('path'), vm = require('vm');
 function loadEngine(){
   if(process.env.ENGINE) return require(process.env.ENGINE);
   const html = fs.readFileSync(path.join(__dirname, '..', 'labyrinth.html'), 'utf8');
@@ -23,102 +23,115 @@ function shiftCell(cell, insert){
   else if(side==='E' && r===index){ c--; if(c<0) c=6; }
   return [r,c];
 }
-function allPushes(state){
-  const out = [];
-  for(const insert of E.legalInserts(state))
-    for(const open of E.distinctRotations(state.spare.open))
-      out.push({insert, open});
+function allPushes(s){
+  const out=[];
+  for(const insert of E.legalInserts(s))
+    for(const open of E.distinctRotations(s.spare.open)) out.push({insert,open});
   return out;
 }
-
-function rebuild(p){
-  const board = [];
-  let k = 0;
-  for(let r=0;r<7;r++){
-    const row = [];
-    for(let c=0;c<7;c++){
-      const [open, tr] = p.board[k++];
-      row.push({open, treasure: tr<0?null:tr, fixed: r%2===0 && c%2===0});
-    }
-    board.push(row);
-  }
-  const mk = (q, idx)=>({
-    idx, name:'', color:'', row:q.row, col:q.col, start:[...q.start],
-    cards: q.target<0 ? [] : [q.target], found: [],
-    turns:0, done:false, isAI:true,
-  });
-  return {
-    board,
-    spare: {open: p.spare[0], treasure: p.spare[1]<0?null:p.spare[1], fixed:false},
-    players: [mk(p.me,0), mk(p.opp,1)],
-    current: 0, phase: 'push',
-    lastInsert: p.lastInsert ? {...p.lastInsert} : null,
-    winners: null, finished: [], seed: 0,
-  };
+function pathTurns(p){
+  let t=0;
+  for(let i=2;i<p.length;i++)
+    if(p[i][0]-p[i-1][0]!==p[i-1][0]-p[i-2][0] || p[i][1]-p[i-1][1]!==p[i-1][1]-p[i-2][1]) t++;
+  return t;
 }
-
-function reachingPushes(state, pIdx){
-  const tid = E.currentTargetId(state.players[pIdx]);
-  const hits = [];
-  for(const ph of allPushes(state)){
-    const s2 = E.cloneState(state);
-    E.applyPush(s2, ph.insert, ph.open);
-    const q = s2.players[pIdx];
-    const g = tid===null ? q.start : E.findTreasure(s2, tid);
-    if(g && E.bfs(s2, q.row, q.col).set[g[0]][g[1]]) hits.push(ph);
+function rebuild(p){
+  const board=[]; let k=0;
+  for(let r=0;r<7;r++){ const row=[];
+    for(let c=0;c<7;c++){ const [open,tr]=p.board[k++];
+      row.push({open, treasure:tr<0?null:tr, fixed:r%2===0&&c%2===0}); }
+    board.push(row); }
+  const mk=(q,idx)=>({idx,name:'',color:'',row:q.row,col:q.col,start:[...q.start],
+    cards:q.target<0?[]:[q.target],found:[],turns:0,done:false,isAI:true});
+  return {board, spare:{open:p.spare[0],treasure:p.spare[1]<0?null:p.spare[1],fixed:false},
+    players:[mk(p.me,0),mk(p.opp,1)], current:0, phase:'push',
+    lastInsert:p.lastInsert?{...p.lastInsert}:null, winners:null, finished:[], seed:0};
+}
+function reachSols(s, pIdx){
+  const tid=E.currentTargetId(s.players[pIdx]); const hits=[];
+  for(const ph of allPushes(s)){
+    const s2=E.cloneState(s); E.applyPush(s2,ph.insert,ph.open);
+    const q=s2.players[pIdx];
+    const g=tid===null?q.start:E.findTreasure(s2,tid);
+    if(!g) continue;
+    const reach=E.bfs(s2,q.row,q.col);
+    if(reach.set[g[0]][g[1]]) hits.push({...ph, turns:pathTurns(E.pathTo(reach,g))});
   }
   return hits;
 }
-function twoTurnPushes(state, meIdx, limit){
-  const tid = E.currentTargetId(state.players[meIdx]);
-  const works = [];
-  for(const ph of allPushes(state)){
-    const s2 = E.cloneState(state);
-    E.applyPush(s2, ph.insert, ph.open);
-    const me = s2.players[meIdx];
-    const reach = E.bfs(s2, me.row, me.col);
-    let ok = false;
-    outer:
-    for(const ph2 of allPushes(s2)){
-      const s3 = E.cloneState(s2);
-      E.applyPush(s3, ph2.insert, ph2.open);
-      const g = tid===null ? me.start : E.findTreasure(s3, tid);
+function twoTurnSols(s, meIdx){
+  const tid=E.currentTargetId(s.players[meIdx]); const works=[];
+  for(const ph of allPushes(s)){
+    const s2=E.cloneState(s); E.applyPush(s2,ph.insert,ph.open);
+    const me=s2.players[meIdx];
+    const reach=E.bfs(s2,me.row,me.col);
+    let ok=false;
+    outer: for(const ph2 of allPushes(s2)){
+      const s3=E.cloneState(s2); E.applyPush(s3,ph2.insert,ph2.open);
+      const g=tid===null?me.start:E.findTreasure(s3,tid);
       if(!g) continue;
-      const back = E.bfs(s3, g[0], g[1]);
+      const back=E.bfs(s3,g[0],g[1]);
       for(let r=0;r<7;r++) for(let c=0;c<7;c++) if(reach.set[r][c]){
-        const [sr,sc] = shiftCell([r,c], ph2.insert);
-        if(back.set[sr][sc]){ ok = true; break outer; }
+        const [sr,sc]=shiftCell([r,c],ph2.insert);
+        if(back.set[sr][sc]){ ok=true; break outer; }
       }
     }
-    if(ok){ works.push(ph); if(works.length>limit) return works; }
+    if(ok) works.push(ph);
   }
   return works;
 }
-function blockingPushes(state, oppIdx){
-  const blocks = [];
-  for(const ph of allPushes(state)){
-    const s2 = E.cloneState(state);
-    E.applyPush(s2, ph.insert, ph.open);
-    if(reachingPushes(s2, oppIdx).length===0) blocks.push(ph);
+function blockSols(s, oppIdx){
+  const blocks=[]; let maxThreat=0;
+  const tid=E.currentTargetId(s.players[oppIdx]);
+  for(const ph of allPushes(s)){
+    const s2=E.cloneState(s); E.applyPush(s2,ph.insert,ph.open);
+    let n=0;
+    for(const ph2 of allPushes(s2)){
+      const s3=E.cloneState(s2); E.applyPush(s3,ph2.insert,ph2.open);
+      const q=s3.players[oppIdx];
+      const g=tid===null?q.start:E.findTreasure(s3,tid);
+      if(g && E.bfs(s3,q.row,q.col).set[g[0]][g[1]]) n++;
+    }
+    if(n===0) blocks.push(ph);
+    if(n>maxThreat) maxThreat=n;
   }
-  return blocks;
+  return {blocks, maxThreat};
 }
-const samePush = (a,b) => a.insert.side===b.insert.side &&
-  a.insert.index===b.insert.index && a.open===b.open;
+/* group raw (insert,open) hits by push arrow, mirroring the miner */
+function groupSols(sols){
+  const map = new Map();
+  for(const s of sols){
+    const k = s.insert.side + s.insert.index;
+    if(!map.has(k)) map.set(k, {insert: s.insert, opens: []});
+    map.get(k).opens.push(s.open);
+  }
+  return [...map.values()];
+}
+const gkey = g => g.insert.side+g.insert.index+'/'+[...g.opens].sort((a,b)=>a-b).join(',');
+const sameSet = (a,b)=>{
+  const A=new Set(groupSols(a).map(gkey)), B=new Set(b.map(gkey));
+  return A.size===B.size && [...A].every(x=>B.has(x));
+};
 
-const file = process.argv[2] || 'puzzles.json';
-const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-const puzzles = Array.isArray(data) ? data : data.puzzles;
+const data = JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
+const list = data.puzzles.slice(+(process.argv[3]||0), +(process.argv[4]||data.puzzles.length));
 let ok=0, bad=0;
-for(const p of puzzles){
+for(const p of list){
   const s = rebuild(p);
-  let sols;
-  if(p.type==='collect1')      sols = reachingPushes(s, 0);
-  else if(p.type==='collect2') sols = twoTurnPushes(s, 0, 1);
-  else if(p.type==='block1')   sols = blockingPushes(s, 1);
-  else { console.log(`${p.id}: unknown type`); bad++; continue; }
-  if(sols.length===1 && samePush(sols[0], p.solution)) ok++;
-  else { console.log(`${p.id}: expected unique solution, got ${sols.length}`); bad++; }
+  let found, extra=true;
+  if(p.type==='collect1'){
+    found = reachSols(s, 0);
+    extra = found.every(h=>h.turns>=2);
+  } else if(p.type==='collect2'){
+    found = twoTurnSols(s, 0);
+  } else {
+    const r = blockSols(s, 1);
+    found = r.blocks;
+    extra = r.maxThreat>=3;
+  }
+  const groups = groupSols(found);
+  if(groups.length===p.solutions && sameSet(found, p.sols) && extra) ok++;
+  else { bad++; console.log(`${p.id}: expected ${p.solutions} lines, found ${groups.length}, extra=${extra}`); }
 }
-console.log(`${ok} verified, ${bad} failed of ${puzzles.length}`);
+console.log(`${ok} verified, ${bad} failed of ${list.length}`);
 process.exit(bad?1:0);
