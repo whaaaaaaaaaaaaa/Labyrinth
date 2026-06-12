@@ -149,6 +149,10 @@
   .oppBtns{display:flex; gap:10px; justify-content:center; margin-bottom:20px;}
   .oppBtns button{background:var(--box); color:var(--text); border:2px solid var(--line); min-width:64px;}
   .oppBtns button.sel{border-color:var(--accent); color:var(--accent);}
+  .seatRow{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px;}
+  .seatRow > span{font-size:.9em; color:var(--dim);}
+  .seatRow .oppBtns{margin-bottom:0;}
+  .seatRow .oppBtns button{min-width:54px; padding:7px 10px;}
   .hidden{display:none !important;}
 </style>
 </head>
@@ -244,7 +248,7 @@
       <div class="menuCol">
         <button id="menuDaily">📅 Daily Challenge</button>
         <button id="menuPuzzles">🧩 Puzzles</button>
-        <button id="menuGame">⚔️ Full Game <span style="font-weight:400; opacity:.7;">vs AI</span></button>
+        <button id="menuGame">⚔️ Full Game <span style="font-weight:400; opacity:.7;">vs AI or friends</span></button>
       </div>
       <div class="label" style="color:var(--dim); margin:18px 0 8px;">Theme</div>
       <div class="oppBtns themeBtns" style="margin-bottom:0;">
@@ -254,19 +258,26 @@
       </div>
     </div>
     <div id="menuGameSetup" class="hidden">
-      <p>Collect all your treasures and return to your starting corner before the AI does.</p>
+      <p>Collect all your treasures and return to your starting corner before anyone else.</p>
       <div class="label" style="color:var(--dim); margin-bottom:8px;">Board size</div>
       <div class="oppBtns sizeBtns">
         <button data-s="5">5×5</button>
         <button data-s="7" class="sel">7×7</button>
         <button data-s="9">9×9</button>
       </div>
-      <div class="label" style="color:var(--dim); margin-bottom:8px;">AI opponents</div>
-      <div class="oppBtns">
-        <button data-n="1" class="sel">1</button>
-        <button data-n="2">2</button>
-        <button data-n="3">3</button>
-      </div>
+      <div class="label" style="color:var(--dim); margin-bottom:8px;">Opponents · Human = local hotseat</div>
+      <div class="seatRow"><span>Opponent 1</span>
+        <div class="oppBtns seatBtns" data-seat="0">
+          <button data-v="ai" class="sel">AI</button><button data-v="human">Human</button>
+        </div></div>
+      <div class="seatRow"><span>Opponent 2</span>
+        <div class="oppBtns seatBtns" data-seat="1">
+          <button data-v="off" class="sel">Off</button><button data-v="ai">AI</button><button data-v="human">Human</button>
+        </div></div>
+      <div class="seatRow"><span>Opponent 3</span>
+        <div class="oppBtns seatBtns" data-seat="2">
+          <button data-v="off" class="sel">Off</button><button data-v="ai">AI</button><button data-v="human">Human</button>
+        </div></div>
       <div class="label" style="color:var(--dim); margin-bottom:8px;">AI difficulty</div>
       <div class="oppBtns diffBtns">
         <button data-d="standard">Standard</button>
@@ -411,7 +422,7 @@ function shuffle(arr, rand){
   return arr;
 }
 
-function newGame(numPlayers, seed, size){
+function newGame(numPlayers, seed, size, humanSeats){
   const n = size || 7;
   const cfg = CONFIG[n];
   if(!cfg) throw new Error('unsupported board size '+n);
@@ -447,7 +458,7 @@ function newGame(numPlayers, seed, size){
       start:[...start], row:start[0], col:start[1],
       cards: deck.slice(i*per, (i+1)*per), found: [],
       turns:0, done:false,
-      isAI: i>0,
+      isAI: humanSeats ? !humanSeats[i] : i>0,
     });
   }
   return { size:n, board, spare, players, current:0, phase:'push', lastInsert:null,
@@ -773,7 +784,7 @@ if(typeof module!=='undefined') module.exports = {
    ============================================================ */
 let state = null;
 let busy = false;          /* true while AI is animating */
-let numOpponents = 1;
+let seatCfg = ['ai','off','off']; /* opponents 1-3: off | ai | human */
 let aiLevel = 'hard';
 let boardSize = 7;         /* board size for the next full game */
 let logLines = [];
@@ -968,8 +979,13 @@ function render(opts){
   grid.style.gridTemplateRows    = `var(--edge) repeat(${n}, var(--cell)) var(--edge)`;
   grid.innerHTML = '';
   cellEls = Array.from({length:n}, ()=>Array(n).fill(null));
-  const human = state.players[0];
-  const isHumanTurn = state.current===0 && state.winners===null && !busy
+  const cur = state.players[state.current];
+  const nHumans = state.players.filter(p=>!p.isAI).length;
+  /* solo: card/tracker always track YOU; hotseat: the active human (or
+     seat 0 while an AI is moving) */
+  const human = nHumans===1 ? state.players.find(p=>!p.isAI)
+              : (!cur.isAI ? cur : state.players[0]);
+  const isHumanTurn = !cur.isAI && state.winners===null && !busy
                    && !(puzzle && (puzzle.solved || puzzle.failed));
   const legal = legalInserts(state);
   const collected = new Set(state.players.flatMap(p=>p.found));
@@ -1139,16 +1155,19 @@ function render(opts){
     const names = p.found.map(t=>TREASURES[t].name).join(', ') || 'No treasures yet';
     const streak = streaks[i]>=2 ? ` <span title="collect streak">🔥${streaks[i]}</span>` : '';
     const flag = p.done ? ' 🏁' : '';
+    const tag = nHumans===1 ? (i===0?' (You)':'') : (p.isAI?' 🤖':'');
     row.innerHTML = `<div class="pdot" style="background:${p.color}"></div>
-      <span>${p.name}${i===0?' (You)':''}${flag}${streak}</span>
+      <span>${p.name}${tag}${flag}${streak}</span>
       <span class="pfound" title="${names}"><span class="cardStack">${stack}</span>${p.found.length}/${p.cards.length}</span>`;
     pl.appendChild(row);
   });
 
+  if(!puzzle) $('cardBox').querySelector('.label').textContent =
+    nHumans>1 ? `${human.name}'s treasure` : 'Your treasure';
   const target = currentTargetId(human);
   if(state.winners!==null){
-    const win0 = state.winners.includes(0);
-    $('cardEmoji').textContent = state.winners.length>1 ? '🤝' : (win0 ? '🏆' : '🤖');
+    const winHuman = state.winners.some(i=>!state.players[i].isAI);
+    $('cardEmoji').textContent = state.winners.length>1 ? '🤝' : (winHuman ? '🏆' : '🤖');
     $('cardName').textContent  = resultText();
   } else if(human.done){
     $('cardEmoji').textContent = '🏁';
@@ -1185,7 +1204,8 @@ function render(opts){
     const seen = foundBy.has(i);
     const cls = 'tr' + (seen?' seen':'') + (i===humanTarget?' target':'');
     const dot = seen ? `<span class="dot" style="background:${foundBy.get(i)}"></span>` : '';
-    return `<span class="${cls}" title="${t.name}${seen?' (found)':i===humanTarget?' (your target)':' (not yet seen)'}">${t.emoji}${dot}</span>`;
+    const tgt = nHumans>1 ? ` (${human.name}'s target)` : ' (your target)';
+    return `<span class="${cls}" title="${t.name}${seen?' (found)':i===humanTarget?tgt:' (not yet seen)'}">${t.emoji}${dot}</span>`;
   }).join('');
 
   let hint = '';
@@ -1193,9 +1213,14 @@ function render(opts){
   else if(dealing) hint = 'Shuffling the maze…';
   else if(busy) hint = state.players[state.current].isAI
     ? `${state.players[state.current].name} is thinking…` : '';
-  else if(state.phase==='push') hint = 'Rotate the spare tile, then click an arrow to push it in.';
-  else hint = 'Click a highlighted square to move (your own square = stay).';
+  else if(state.phase==='push') hint = (nHumans>1 ? cur.name+': ' : '')
+    + 'Rotate the spare tile, then click an arrow to push it in.';
+  else hint = (nHumans>1 ? cur.name+': ' : '')
+    + 'Click a highlighted square to move (your own square = stay).';
   $('hint').textContent = hint;
+  /* hotseat handoff banner: tint the hint in the active player's colour */
+  $('hint').style.color = (nHumans>1 && state.winners===null && !dealing
+                           && !busy && !cur.isAI) ? cur.color : '';
 
   $('log').innerHTML = logLines.slice(-40).map(l=>`<div>${l}</div>`).reverse().join('');
 
@@ -1204,8 +1229,13 @@ function render(opts){
 
 function log(msg){ logLines.push(msg); }
 
+/* solo = exactly one human seat: keeps the classic "You" voice; hotseat
+   games speak in player-colour names instead */
+function isSolo(){ return state.players.filter(p=>!p.isAI).length===1; }
+function who(i){ return (isSolo() && i===0) ? 'You' : state.players[i].name; }
+
 function resultText(){
-  const names = state.winners.map(i => i===0 ? 'You' : state.players[i].name);
+  const names = state.winners.map(i => who(i));
   if(names.length>1) return 'Draw: ' + names.join(' & ');
   return names[0]==='You' ? 'You win!' : names[0] + ' wins!';
 }
@@ -1353,14 +1383,14 @@ function spawnCollectFX(r, c, emoji){
 
 function describeEvent(ev){
   const p = state.players[ev.player];
-  const who = ev.player===0 ? 'You' : p.name;
-  if(ev.collected!==null) log(`${who} found ${TREASURES[ev.collected].emoji} ${TREASURES[ev.collected].name}!`);
-  if(ev.finished) log(`🏁 ${who} collected everything and returned home!`);
+  const w = who(ev.player);
+  if(ev.collected!==null) log(`${w} found ${TREASURES[ev.collected].emoji} ${TREASURES[ev.collected].name}!`);
+  if(ev.finished) log(`🏁 ${w} collected everything and returned home!`);
   if(ev.gameOver) log(`🏆 Game over — ${resultText()}`);
 }
 
 function humanPush(side, index){
-  if(busy || state.phase!=='push' || state.current!==0 || state.winners!==null) return;
+  if(busy || state.phase!=='push' || state.players[state.current].isAI || state.winners!==null) return;
   if(puzzle && (puzzle.solved || puzzle.failed)) return;
   if(puzzle) puzzle.snaps.push({state: cloneState(state), stage: puzzle.stage,
                                 action:'push', insert:{side, index}});
@@ -1373,15 +1403,16 @@ function humanPush(side, index){
 }
 
 function humanMove(r, c){
-  if(busy || state.phase!=='move' || state.current!==0 || state.winners!==null) return;
+  if(busy || state.phase!=='move' || state.players[state.current].isAI || state.winners!==null) return;
   if(puzzle){ puzzleMove(r, c); return; }
-  const me = state.players[0];
+  const idx = state.current;
+  const me = state.players[idx];
   const from = [me.row, me.col];
   const path = pathTo(bfs(state, from[0], from[1]), [r,c]);
   const ev = applyMove(state, r, c);
   uiLastMove = {from, to:[r,c], color:me.color};
   busy = true;
-  animatePawnMove(0, path, ()=>{
+  animatePawnMove(idx, path, ()=>{
     busy = false;
     finishMove(ev, [r,c]);
   });
@@ -1392,7 +1423,7 @@ function finishMove(ev, to){
   if(ev.collected!==null){
     streaks[ev.player]++;
     if(streaks[ev.player]>=2)
-      log(`🔥 ${ev.player===0?'You are':state.players[ev.player].name+' is'} on a ${streaks[ev.player]}-treasure streak!`);
+      log(`🔥 ${who(ev.player)==='You'?'You are':state.players[ev.player].name+' is'} on a ${streaks[ev.player]}-treasure streak!`);
   } else streaks[ev.player]=0;
   render();
   if(ev.collected!==null){
@@ -1444,9 +1475,12 @@ function runAITurns(){
 
 function startGame(){
   puzzle = null;
-  state = newGame(1 + numOpponents, Math.floor(Math.random()*2**31), boardSize);
+  const types = seatCfg.filter(t=>t!=='off');
+  const humans = [true, ...types.map(t=>t==='human')];
+  state = newGame(1 + types.length, Math.floor(Math.random()*2**31), boardSize, humans);
   logLines = [];
-  log(`New game (${boardSize}×${boardSize}): you vs ${numOpponents} AI opponent${numOpponents>1?'s':''}. Good luck!`);
+  log(`New game (${boardSize}×${boardSize}): ` +
+      state.players.map(p=>p.name+(p.isAI?' (AI)':'')).join(' vs ') + '. Good luck!');
   uiLastMove = null;
   pawnArms = [null,null,null,null];
   streaks  = [0,0,0,0];
@@ -1891,12 +1925,15 @@ $('pzExitBtn').onclick = ()=>{
   openPuzzlePicker(wasDaily); /* rebuild list so solved marks are fresh */
 };
 
-document.querySelectorAll('.oppBtns button[data-n]').forEach(b=>{
-  b.onclick = ()=>{
-    document.querySelectorAll('.oppBtns button[data-n]').forEach(x=>x.classList.remove('sel'));
-    b.classList.add('sel');
-    numOpponents = +b.dataset.n;
-  };
+document.querySelectorAll('.seatBtns').forEach(g=>{
+  const seat = +g.dataset.seat;
+  g.querySelectorAll('button').forEach(b=>{
+    b.onclick = ()=>{
+      g.querySelectorAll('button').forEach(x=>x.classList.remove('sel'));
+      b.classList.add('sel');
+      seatCfg[seat] = b.dataset.v;
+    };
+  });
 });
 document.querySelectorAll('.sizeBtns button').forEach(b=>{
   b.onclick = ()=>{
@@ -1925,7 +1962,7 @@ $('newGameBtn').onclick = ()=>{
 };
 function canRotateSpare(){
   return state!==null && !busy && !spareFlying && state.phase==='push'
-      && state.current===0 && state.winners===null
+      && !state.players[state.current].isAI && state.winners===null
       && !(puzzle && (puzzle.solved || puzzle.failed));
 }
 $('spareWrap').onclick = ()=>{
