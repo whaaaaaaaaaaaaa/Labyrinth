@@ -1,7 +1,8 @@
-/* Independent verifier v2: rebuilds each puzzle from JSON alone and
-   re-proves: solution set is exactly `sols` (count + membership),
-   collect1 paths all bend >=2 times, block threat is real.
-   Usage: node verify2.js file.json [fromIdx] [toIdx] */
+/* Independent verifier v3: rebuilds each puzzle from JSON alone (any board
+   size; `size` field, default 7) and re-proves: solution set is exactly
+   `sols` (count + membership), collect1 paths all bend >=2 times, block
+   threat is real.
+   Usage: node verify_puzzles.js file.json [fromIdx] [toIdx] */
 const fs = require('fs');
 const path = require('path'), vm = require('vm');
 function loadEngine(){
@@ -14,15 +15,6 @@ function loadEngine(){
 }
 const E = loadEngine();
 
-function shiftCell(cell, insert){
-  let [r,c] = cell;
-  const {side, index} = insert;
-  if(side==='N' && c===index){ r++; if(r>6) r=0; }
-  else if(side==='S' && c===index){ r--; if(r<0) r=6; }
-  else if(side==='W' && r===index){ c++; if(c>6) c=0; }
-  else if(side==='E' && r===index){ c--; if(c<0) c=6; }
-  return [r,c];
-}
 function allPushes(s){
   const out=[];
   for(const insert of E.legalInserts(s))
@@ -36,14 +28,15 @@ function pathTurns(p){
   return t;
 }
 function rebuild(p){
+  const n = p.size || 7;
   const board=[]; let k=0;
-  for(let r=0;r<7;r++){ const row=[];
-    for(let c=0;c<7;c++){ const [open,tr]=p.board[k++];
+  for(let r=0;r<n;r++){ const row=[];
+    for(let c=0;c<n;c++){ const [open,tr]=p.board[k++];
       row.push({open, treasure:tr<0?null:tr, fixed:r%2===0&&c%2===0}); }
     board.push(row); }
   const mk=(q,idx)=>({idx,name:'',color:'',row:q.row,col:q.col,start:[...q.start],
     cards:q.target<0?[]:[q.target],found:[],turns:0,done:false,isAI:true});
-  return {board, spare:{open:p.spare[0],treasure:p.spare[1]<0?null:p.spare[1],fixed:false},
+  return {size:n, board, spare:{open:p.spare[0],treasure:p.spare[1]<0?null:p.spare[1],fixed:false},
     players:[mk(p.me,0),mk(p.opp,1)], current:0, phase:'push',
     lastInsert:p.lastInsert?{...p.lastInsert}:null, winners:null, finished:[], seed:0};
 }
@@ -60,6 +53,7 @@ function reachSols(s, pIdx){
   return hits;
 }
 function twoTurnSols(s, meIdx){
+  const n = s.size || 7;
   const tid=E.currentTargetId(s.players[meIdx]); const works=[];
   for(const ph of allPushes(s)){
     const s2=E.cloneState(s); E.applyPush(s2,ph.insert,ph.open);
@@ -71,8 +65,8 @@ function twoTurnSols(s, meIdx){
       const g=tid===null?me.start:E.findTreasure(s3,tid);
       if(!g) continue;
       const back=E.bfs(s3,g[0],g[1]);
-      for(let r=0;r<7;r++) for(let c=0;c<7;c++) if(reach.set[r][c]){
-        const [sr,sc]=shiftCell([r,c],ph2.insert);
+      for(let r=0;r<n;r++) for(let c=0;c<n;c++) if(reach.set[r][c]){
+        const [sr,sc]=E.shiftCell([r,c],ph2.insert,n);
         if(back.set[sr][sc]){ ok=true; break outer; }
       }
     }
@@ -114,7 +108,8 @@ const sameSet = (a,b)=>{
 };
 
 const data = JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
-const list = data.puzzles.slice(+(process.argv[3]||0), +(process.argv[4]||data.puzzles.length));
+const all = data.puzzles || data;
+const list = all.slice(+(process.argv[3]||0), +(process.argv[4]||all.length));
 let ok=0, bad=0;
 for(const p of list){
   const s = rebuild(p);

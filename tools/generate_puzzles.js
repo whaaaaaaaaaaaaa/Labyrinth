@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 /* ============================================================
-   LABYRINTH PUZZLE MINER v2
+   LABYRINTH PUZZLE MINER v3
+   - board-size aware: --size 5|7|9 (default 7); non-7 puzzles
+     carry a `size` field and an `s5-`/`s9-` id prefix
    - accepts 1..3 equally valid solutions (stored in `sols`,
      count in `solutions`, primary in `solution`)
    - flags puzzles whose every solution wraps a pawn off the
      board (`wrap: true`) so assembly can cap them at <20%
    - collect1 quality filter: every solution's walking path must
      bend at least twice (no straight-line trivia)
-   Usage: node generate_puzzles.js --seeds 1-10 --out part.json
+   Usage: node generate_puzzles.js --seeds 1-10 --size 9 --out part.json
    ============================================================ */
 const fs = require('fs'), path = require('path'), vm = require('vm');
 
@@ -22,15 +24,14 @@ function loadEngine(){
 }
 const E = loadEngine();
 
-function shiftCell(cell, insert){
-  let [r,c] = cell;
-  const {side, index} = insert;
-  if(side==='N' && c===index){ r++; if(r>6) r=0; }
-  else if(side==='S' && c===index){ r--; if(r<0) r=6; }
-  else if(side==='W' && r===index){ c++; if(c>6) c=0; }
-  else if(side==='E' && r===index){ c--; if(c<0) c=6; }
-  return [r,c];
+function getArg(name, dflt){
+  const i = process.argv.indexOf('--'+name);
+  return i>=0 ? process.argv[i+1] : dflt;
 }
+const SIZE = +getArg('size', '7');
+const LAST = SIZE-1;
+const IDP  = SIZE===7 ? '' : `s${SIZE}-`;
+
 function allPushes(state){
   const out = [];
   for(const insert of E.legalInserts(state))
@@ -79,7 +80,7 @@ function reachingPushes(state, pIdx, cap){
         insert: ph.insert, open: ph.open, dest: g,
         dist: reach.dist[g[0]][g[1]],
         turns: pathTurns(walk),
-        wrap: Math.abs(q.row-p0.row)===6 || Math.abs(q.col-p0.col)===6,
+        wrap: Math.abs(q.row-p0.row)===LAST || Math.abs(q.col-p0.col)===LAST,
       });
       if(cap && distinctIns(hits)>cap) return hits;
     }
@@ -116,14 +117,14 @@ function twoTurnPushes(state, meIdx, cap){
       const g = tid===null ? me.start : E.findTreasure(s3, tid);
       if(!g) continue;
       const back = E.bfs(s3, g[0], g[1]);
-      for(let r=0;r<7;r++) for(let c=0;c<7;c++) if(reach.set[r][c]){
-        const [sr,sc] = shiftCell([r,c], ph2.insert);
+      for(let r=0;r<SIZE;r++) for(let c=0;c<SIZE;c++) if(reach.set[r][c]){
+        const [sr,sc] = E.shiftCell([r,c], ph2.insert, SIZE);
         if(back.set[sr][sc]){ ok = true; break outer; }
       }
     }
     if(ok){
       works.push({insert: ph.insert, open: ph.open, dest: null,
-        wrap: Math.abs(me.row-me0.row)===6 || Math.abs(me.col-me0.col)===6});
+        wrap: Math.abs(me.row-me0.row)===LAST || Math.abs(me.col-me0.col)===LAST});
       if(cap && distinctIns(works)>cap) return works;
     }
   }
@@ -141,7 +142,7 @@ function blockingPushes(state, oppIdx){
     if(n===0){
       const q = s2.players[oppIdx];
       blocks.push({insert: ph.insert, open: ph.open, dest: null,
-        wrap: Math.abs(q.row-o0.row)===6 || Math.abs(q.col-o0.col)===6});
+        wrap: Math.abs(q.row-o0.row)===LAST || Math.abs(q.col-o0.col)===LAST});
     }
     if(n>maxThreat) maxThreat = n;
   }
@@ -156,7 +157,7 @@ function serialize(state, type, sols, difficulty, id){
   const oppIdx = (meIdx+1) % state.players.length;
   const me = state.players[meIdx], opp = state.players[oppIdx];
   const groups = groupSols(sols);
-  return {
+  const out = {
     id, type, difficulty,
     solutions: groups.length,
     wrap: groups.every(g=>g.wrap),
@@ -168,6 +169,8 @@ function serialize(state, type, sols, difficulty, id){
     sols: groups,
     solution: groups[0],
   };
+  if(SIZE!==7) out.size = SIZE;
+  return out;
 }
 function boardHash(state){
   return state.board.flat().map(t=>t.open+'.'+t.treasure).join('|')
@@ -178,7 +181,7 @@ function mine(seedFrom, seedTo){
   const puzzles = [];
   const seen = new Set();
   for(let seed=seedFrom; seed<=seedTo; seed++){
-    const s = E.newGame(2, seed);
+    const s = E.newGame(2, seed, SIZE);
     let t = 0;
     while(s.winners===null && t<300){
       const meIdx = s.current;
@@ -191,17 +194,17 @@ function mine(seedFrom, seedTo){
         if(hits.length>=1 && distinctIns(hits)<=3 && hits.every(x=>x.turns>=2)){
           const minD = Math.min(...hits.map(x=>x.dist));
           puzzles.push(serialize(s, 'collect1', hits,
-            minD<=3 ? 'medium' : 'hard', `c1-${seed}-${t}`));
+            minD<=3 ? 'medium' : 'hard', `${IDP}c1-${seed}-${t}`));
         } else if(hits.length===0){
           const works = twoTurnPushes(s, meIdx, 3);
           if(works.length>=1 && distinctIns(works)<=3)
-            puzzles.push(serialize(s, 'collect2', works, 'hard', `c2-${seed}-${t}`));
+            puzzles.push(serialize(s, 'collect2', works, 'hard', `${IDP}c2-${seed}-${t}`));
         }
         if(opp.found.length >= opp.cards.length-1){
           const {blocks, maxThreat} = blockingPushes(s, oppIdx);
           if(blocks.length>=1 && distinctIns(blocks)<=3 && maxThreat>=3)
             puzzles.push(serialize(s, 'block1', blocks,
-              maxThreat>=8 ? 'expert' : 'hard', `b1-${seed}-${t}`));
+              maxThreat>=8 ? 'expert' : 'hard', `${IDP}b1-${seed}-${t}`));
         }
       }
       const ch = E.aiChooseMove(s, 'hard');
@@ -213,10 +216,6 @@ function mine(seedFrom, seedTo){
   return puzzles;
 }
 
-function getArg(name, dflt){
-  const i = process.argv.indexOf('--'+name);
-  return i>=0 ? process.argv[i+1] : dflt;
-}
 const [a,b] = getArg('seeds','1-2').split('-').map(Number);
 const out = getArg('out', 'puzzles_part.json');
 const t0 = Date.now();
@@ -226,4 +225,4 @@ const stat = ty => {
   const l = puzzles.filter(p=>p.type===ty);
   return `${l.length} ${ty} (${l.filter(p=>p.wrap).length} wrap, ${l.filter(p=>p.solutions>1).length} multi-line)`;
 };
-console.log(`seeds ${a}-${b}: ${stat('collect1')}, ${stat('collect2')}, ${stat('block1')} in ${((Date.now()-t0)/1000).toFixed(1)}s`);
+console.log(`size ${SIZE}, seeds ${a}-${b}: ${stat('collect1')}, ${stat('collect2')}, ${stat('block1')} in ${((Date.now()-t0)/1000).toFixed(1)}s`);

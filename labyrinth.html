@@ -7,7 +7,8 @@
 <!-- v1.1: move highlighting, push animation, cobble/dirt art, treasure tracker -->
 <style>
   :root{
-    --cell: min(12vh, calc((100vw - 650px)/7.8), 170px);
+    --bn: 7; /* board size, set from JS */
+    --cell: min(calc(84vh/var(--bn)), calc((100vw - 650px)/(var(--bn) + 0.8)), 170px);
     --edge: calc(var(--cell)*0.38);
     --bg:#1d2230; --panel:#262c3e;
     --reach:#7ee08755; --reach-border:#7ee087;
@@ -16,8 +17,8 @@
   *{box-sizing:border-box; margin:0; padding:0;}
   body{background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif;
        display:flex; align-items:center; justify-content:center; min-height:100vh; gap:24px; padding:16px;}
-  #sidebar{width:300px; background:var(--panel); border-radius:14px; padding:18px; display:flex; flex-direction:column; gap:14px; max-height:calc(7.76*var(--cell)); overflow-y:auto;}
-  #rightbar{width:230px; background:var(--panel); border-radius:14px; padding:18px; display:flex; flex-direction:column; gap:14px; max-height:calc(7.76*var(--cell)); overflow-y:auto;}
+  #sidebar{width:300px; background:var(--panel); border-radius:14px; padding:18px; display:flex; flex-direction:column; gap:14px; max-height:calc((var(--bn) + 0.76)*var(--cell)); overflow-y:auto;}
+  #rightbar{width:230px; background:var(--panel); border-radius:14px; padding:18px; display:flex; flex-direction:column; gap:14px; max-height:calc((var(--bn) + 0.76)*var(--cell)); overflow-y:auto;}
   h1{font-size:1.4em; color:var(--accent); letter-spacing:2px;}
   .playerRow{display:flex; align-items:center; gap:8px; padding:7px 9px; border-radius:8px; background:#1f2433; border:2px solid transparent; font-size:.92em;}
   .playerRow.active{border-color:var(--accent);}
@@ -144,7 +145,7 @@
   .menuCol{display:flex; flex-direction:column; gap:12px; margin-top:8px;}
   .menuCol button{font-size:1.05em; padding:13px;}
   /* puzzle mode hides the left panel; let the board use the space */
-  body.puzzleMode{--cell: min(12vh, calc((100vw - 360px)/7.8), 170px);}
+  body.puzzleMode{--cell: min(calc(84vh/var(--bn)), calc((100vw - 360px)/(var(--bn) + 0.8)), 170px);}
   .oppBtns{display:flex; gap:10px; justify-content:center; margin-bottom:20px;}
   .oppBtns button{background:#1f2433; color:var(--text); border:2px solid #444c63; min-width:64px;}
   .oppBtns button.sel{border-color:var(--accent); color:var(--accent);}
@@ -246,6 +247,12 @@
     </div>
     <div id="menuGameSetup" class="hidden">
       <p>Collect all your treasures and return to your starting corner before the AI does.</p>
+      <div class="label" style="color:var(--dim); margin-bottom:8px;">Board size</div>
+      <div class="oppBtns sizeBtns">
+        <button data-s="5">5×5</button>
+        <button data-s="7" class="sel">7×7</button>
+        <button data-s="9">9×9</button>
+      </div>
       <div class="label" style="color:var(--dim); margin-bottom:8px;">AI opponents</div>
       <div class="oppBtns">
         <button data-n="1" class="sel">1</button>
@@ -269,10 +276,12 @@
    Designed so a future multiplayer server can run this exact
    module: all state is a plain serializable object, and all
    mutations go through applyPush / applyMove.
+   Board size is parameterized: 5×5, 7×7 (classic), 9×9.
    ============================================================ */
 const N=1, E=2, S=4, W=8;
 const SIDES = {N:[-1,0], E:[0,1], S:[1,0], W:[0,-1]};
 const OPPOSITE = {N:'S', S:'N', E:'W', W:'E'};
+const ROT_CW = {N:'E', E:'S', S:'W', W:'N'};
 
 function rot(open, times){
   for(let i=0;i<times;i++) open = ((open<<1)&15) | (open>>3);
@@ -284,8 +293,10 @@ function distinctRotations(open){
   return set;
 }
 
-/* 24 treasures, faithful to the original count:
-   12 on fixed tiles, 6 on movable T-tiles, 6 on movable corner tiles */
+/* 36 treasures. The first 24 are the faithful original set (used by the
+   classic 7×7 board: 12 on fixed tiles, 6 on movable T-tiles, 6 on movable
+   corners). 24–35 extend the set for the 9×9 board. Treasure ids are
+   size-local: each board size uses ids 0..count-1 of this array. */
 const TREASURES = [
   {name:'Book',          emoji:'📖'}, {name:'Coin Purse',   emoji:'💰'},
   {name:'Map',           emoji:'🗺️'}, {name:'Crown',        emoji:'👑'},
@@ -299,22 +310,81 @@ const TREASURES = [
   {name:'Scarab',        emoji:'🪲'}, {name:'Rat',          emoji:'🐀'},
   {name:'Spider',        emoji:'🕷️'}, {name:'Moth',         emoji:'🦋'},
   {name:'Salamander',    emoji:'🦎'}, {name:'Troll',        emoji:'👹'},
+  {name:'Scroll',        emoji:'📜'}, {name:'Amphora',      emoji:'🏺'},
+  {name:'Crystal Ball',  emoji:'🔮'}, {name:'Compass',      emoji:'🧭'},
+  {name:'Bell',          emoji:'🔔'}, {name:'Lantern',      emoji:'🏮'},
+  {name:'Serpent',       emoji:'🐍'}, {name:'Scorpion',     emoji:'🦂'},
+  {name:'Mermaid',       emoji:'🧜'}, {name:'Falcon',       emoji:'🦅'},
+  {name:'Unicorn',       emoji:'🦄'}, {name:'Octopus',      emoji:'🐙'},
 ];
 
-/* The 16 fixed tiles of the original board (row, col, openings, treasureId) */
-const FIXED = [
-  [0,0, S|E, null], [0,2, S|E|W, 0], [0,4, S|E|W, 1], [0,6, S|W, null],
-  [2,0, N|E|S, 2],  [2,2, N|E|S, 3], [2,4, S|E|W, 4], [2,6, N|S|W, 5],
-  [4,0, N|E|S, 6],  [4,2, N|E|W, 7], [4,4, N|S|W, 8], [4,6, N|S|W, 9],
-  [6,0, N|E, null], [6,2, N|E|W, 10],[6,4, N|E|W, 11],[6,6, N|W, null],
-];
+/* Per-size board recipe. Movable counts must satisfy
+   straights + tTs + tCorners + plainCorners === n*n - fixedCount + 1
+   (board movables + 1 spare). Treasure totals (fixed + tTs + tCorners)
+   all divide evenly among 2/3/4 players: 12 / 24 / 36. */
+const CONFIG = {
+  5: {treasures:12, straights:6,  tTs:3,  tCorners:4, plainCorners:4},
+  7: {treasures:24, straights:13, tTs:6,  tCorners:6, plainCorners:9},
+  9: {treasures:36, straights:22, tTs:10, tCorners:5, plainCorners:20},
+};
+const SIZES = [5,7,9];
+
+/* Generate the fixed-tile layout for an n×n board (n odd; fixed tiles sit
+   at even/even). The rules generalize the original 7×7 board exactly:
+   - corners: L-tiles opening inward;
+   - edge tiles: T-tiles missing their outward side;
+   - centre tile (only exists for n=5,9): a cross, open all four ways —
+     a T cannot satisfy the board's 4-fold rotational symmetry;
+   - other interior tiles: T-tiles, oriented with 4-fold rotational
+     symmetry; orbit representatives (reading order) miss W on the
+     diagonal, N otherwise. For n=7 this reproduces the original board
+     tile-for-tile, treasures and all.
+   Treasures are numbered in reading order over the non-corner tiles. */
+function fixedLayout(n){
+  const last = n-1, mid = last/2, ALL = N|E|S|W;
+  /* interior orientation by rotational orbits */
+  const missing = {};
+  for(let r=2;r<last;r+=2) for(let c=2;c<last;c+=2){
+    if((r===mid && c===mid) || missing[r+','+c]) continue;
+    let miss = (r===c) ? 'W' : 'N';
+    let pr=r, pc=c;
+    for(let k=0;k<4;k++){
+      missing[pr+','+pc] = miss;
+      [pr,pc] = [pc, last-pr];          /* rotate position 90° CW */
+      miss = ROT_CW[miss];              /* rotate direction 90° CW */
+    }
+  }
+  const tiles = [];
+  let tr = 0;
+  for(let r=0;r<n;r+=2) for(let c=0;c<n;c+=2){
+    if((r===0||r===last) && (c===0||c===last)){
+      tiles.push([r, c, (r===0?S:N)|(c===0?E:W), null]);
+      continue;
+    }
+    let open;
+    if(r===0) open = ALL & ~N;
+    else if(r===last) open = ALL & ~S;
+    else if(c===0) open = ALL & ~W;
+    else if(c===last) open = ALL & ~E;
+    else if(r===mid && c===mid) open = ALL;  /* centre cross */
+    else open = ALL & ~{N,E,S,W}[missing[r+','+c]];
+    tiles.push([r, c, open, tr++]);
+  }
+  return tiles;
+}
+/* The 16 fixed tiles of the original 7×7 board, kept for compatibility. */
+const FIXED = fixedLayout(7);
 
 const PLAYER_DEFS = [
-  {name:'Red',    color:'#e63946', start:[0,0]},
-  {name:'Blue',   color:'#5390d9', start:[6,6]},
-  {name:'Yellow', color:'#f4a261', start:[0,6]},
-  {name:'Green',  color:'#2a9d8f', start:[6,0]},
+  {name:'Red',    color:'#e63946', corner:0},
+  {name:'Blue',   color:'#5390d9', corner:3},
+  {name:'Yellow', color:'#f4a261', corner:1},
+  {name:'Green',  color:'#2a9d8f', corner:2},
 ];
+function cornerPos(corner, n){
+  const last = n-1;
+  return [[0,0],[0,last],[last,0],[last,last]][corner];
+}
 
 /* deterministic RNG so games are reproducible/testable */
 function mulberry32(seed){
@@ -333,44 +403,54 @@ function shuffle(arr, rand){
   return arr;
 }
 
-function newGame(numPlayers, seed){
+function newGame(numPlayers, seed, size){
+  const n = size || 7;
+  const cfg = CONFIG[n];
+  if(!cfg) throw new Error('unsupported board size '+n);
   const rand = mulberry32(seed);
-  /* movable tile pool: 13 straights, 6 treasure T-tiles, 6 treasure corners, 9 plain corners = 34 */
+  const fixed = fixedLayout(n);
+  const fixedT = fixed.filter(f => f[3]!==null).length;
+  /* movable tile pool — straights, treasure Ts, treasure corners, plain
+     corners, in this order (order matters for 7×7 seed reproducibility) */
   const pool = [];
-  for(let i=0;i<13;i++) pool.push({open:N|S, treasure:null, fixed:false});
-  for(let t=12;t<18;t++) pool.push({open:E|S|W, treasure:t, fixed:false});
-  for(let t=18;t<24;t++) pool.push({open:N|E, treasure:t, fixed:false});
-  for(let i=0;i<9;i++)  pool.push({open:N|E, treasure:null, fixed:false});
+  for(let i=0;i<cfg.straights;i++) pool.push({open:N|S, treasure:null, fixed:false});
+  for(let t=fixedT; t<fixedT+cfg.tTs; t++) pool.push({open:E|S|W, treasure:t, fixed:false});
+  for(let t=fixedT+cfg.tTs; t<fixedT+cfg.tTs+cfg.tCorners; t++) pool.push({open:N|E, treasure:t, fixed:false});
+  for(let i=0;i<cfg.plainCorners;i++) pool.push({open:N|E, treasure:null, fixed:false});
   shuffle(pool, rand);
   pool.forEach(t => t.open = rot(t.open, Math.floor(rand()*4)));
 
-  const board = Array.from({length:7}, ()=>Array(7).fill(null));
-  for(const [r,c,open,tr] of FIXED) board[r][c] = {open, treasure:tr, fixed:true};
+  const board = Array.from({length:n}, ()=>Array(n).fill(null));
+  for(const [r,c,open,tr] of fixed) board[r][c] = {open, treasure:tr, fixed:true};
   let k=0;
-  for(let r=0;r<7;r++) for(let c=0;c<7;c++)
+  for(let r=0;r<n;r++) for(let c=0;c<n;c++)
     if(!board[r][c]) board[r][c] = pool[k++];
-  const spare = pool[k]; /* the 34th tile */
+  const spare = pool[k]; /* the last pooled tile */
 
   /* deal treasure cards: each player hunts them one at a time, in order */
-  const deck = shuffle([...Array(24).keys()], rand);
-  const per = Math.floor(24/numPlayers);
+  const deck = shuffle([...Array(cfg.treasures).keys()], rand);
+  const per = Math.floor(cfg.treasures/numPlayers);
   const players = [];
   for(let i=0;i<numPlayers;i++){
     const def = PLAYER_DEFS[i];
+    const start = cornerPos(def.corner, n);
     players.push({
       idx:i, name:def.name, color:def.color,
-      start:[...def.start], row:def.start[0], col:def.start[1],
+      start:[...start], row:start[0], col:start[1],
       cards: deck.slice(i*per, (i+1)*per), found: [],
       turns:0, done:false,
       isAI: i>0,
     });
   }
-  return { board, spare, players, current:0, phase:'push', lastInsert:null,
+  return { size:n, board, spare, players, current:0, phase:'push', lastInsert:null,
            winners:null, finished:[], seed };
 }
 
+function sizeOf(state){ return state.size || 7; }
+
 function cloneState(s){
   return {
+    size: s.size || 7,
     board: s.board.map(row => row.map(t => ({...t}))),
     spare: {...s.spare},
     players: s.players.map(p => ({...p, start:[...p.start], cards:[...p.cards], found:[...p.found]})),
@@ -383,9 +463,10 @@ function cloneState(s){
 }
 
 function legalInserts(state){
+  const n = sizeOf(state);
   const out = [];
   for(const side of ['N','S','W','E'])
-    for(const index of [1,3,5]){
+    for(let index=1; index<n-1; index+=2){
       if(state.lastInsert &&
          state.lastInsert.side === OPPOSITE[side] &&
          state.lastInsert.index === index) continue; /* may not undo previous push */
@@ -396,30 +477,31 @@ function legalInserts(state){
 
 /* Push the spare tile in at {side,index} with orientation `open`. */
 function applyPush(state, insert, open){
+  const n = sizeOf(state), last = n-1;
   const {side, index} = insert;
   const tile = {...state.spare, open};
   const b = state.board;
   let popped, entry;
   if(side==='N'){
-    popped = b[6][index];
-    for(let r=6;r>0;r--) b[r][index] = b[r-1][index];
+    popped = b[last][index];
+    for(let r=last;r>0;r--) b[r][index] = b[r-1][index];
     b[0][index] = tile; entry = [0,index];
-    for(const p of state.players) if(p.col===index){ p.row++; if(p.row>6) p.row=0; }
+    for(const p of state.players) if(p.col===index){ p.row++; if(p.row>last) p.row=0; }
   } else if(side==='S'){
     popped = b[0][index];
-    for(let r=0;r<6;r++) b[r][index] = b[r+1][index];
-    b[6][index] = tile; entry = [6,index];
-    for(const p of state.players) if(p.col===index){ p.row--; if(p.row<0) p.row=6; }
+    for(let r=0;r<last;r++) b[r][index] = b[r+1][index];
+    b[last][index] = tile; entry = [last,index];
+    for(const p of state.players) if(p.col===index){ p.row--; if(p.row<0) p.row=last; }
   } else if(side==='W'){
-    popped = b[index][6];
-    for(let c=6;c>0;c--) b[index][c] = b[index][c-1];
+    popped = b[index][last];
+    for(let c=last;c>0;c--) b[index][c] = b[index][c-1];
     b[index][0] = tile; entry = [index,0];
-    for(const p of state.players) if(p.row===index){ p.col++; if(p.col>6) p.col=0; }
+    for(const p of state.players) if(p.row===index){ p.col++; if(p.col>last) p.col=0; }
   } else { /* E */
     popped = b[index][0];
-    for(let c=0;c<6;c++) b[index][c] = b[index][c+1];
-    b[index][6] = tile; entry = [index,6];
-    for(const p of state.players) if(p.row===index){ p.col--; if(p.col<0) p.col=6; }
+    for(let c=0;c<last;c++) b[index][c] = b[index][c+1];
+    b[index][last] = tile; entry = [index,last];
+    for(const p of state.players) if(p.row===index){ p.col--; if(p.col<0) p.col=last; }
   }
   state.spare = popped;
   state.lastInsert = {side, index};
@@ -429,9 +511,10 @@ function applyPush(state, insert, open){
 
 /* BFS over connected passages from (r,c). Returns {set, dist, prev}. */
 function bfs(state, r, c){
-  const set  = Array.from({length:7}, ()=>Array(7).fill(false));
-  const dist = Array.from({length:7}, ()=>Array(7).fill(Infinity));
-  const prev = Array.from({length:7}, ()=>Array(7).fill(null));
+  const n = sizeOf(state), last = n-1;
+  const set  = Array.from({length:n}, ()=>Array(n).fill(false));
+  const dist = Array.from({length:n}, ()=>Array(n).fill(Infinity));
+  const prev = Array.from({length:n}, ()=>Array(n).fill(null));
   const q = [[r,c]];
   set[r][c]=true; dist[r][c]=0;
   while(q.length){
@@ -440,7 +523,7 @@ function bfs(state, r, c){
     for(const [side,[dr,dc]] of Object.entries(SIDES)){
       if(!(t.open & {N,E,S,W}[side])) continue;
       const nr=cr+dr, nc=cc+dc;
-      if(nr<0||nr>6||nc<0||nc>6||set[nr][nc]) continue;
+      if(nr<0||nr>last||nc<0||nc>last||set[nr][nc]) continue;
       const nt = state.board[nr][nc];
       if(!(nt.open & {N,E,S,W}[OPPOSITE[side]])) continue;
       set[nr][nc]=true; dist[nr][nc]=dist[cr][cc]+1; prev[nr][nc]=[cr,cc];
@@ -464,7 +547,8 @@ function currentTargetId(player){
   return player.found.length < player.cards.length ? player.cards[player.found.length] : null;
 }
 function findTreasure(state, id){
-  for(let r=0;r<7;r++) for(let c=0;c<7;c++)
+  const n = sizeOf(state);
+  for(let r=0;r<n;r++) for(let c=0;c<n;c++)
     if(state.board[r][c].treasure===id) return [r,c];
   return null; /* it's on the spare tile */
 }
@@ -522,6 +606,7 @@ function aiChooseMove(state, level){
 }
 
 function aiGreedy(state){
+  const n = sizeOf(state), mid = (n-1)/2;
   const meIdx = state.current;
   const targetId = currentTargetId(state.players[meIdx]);
   let best = null;
@@ -539,9 +624,9 @@ function aiGreedy(state){
       } else {
         /* closest reachable cell to the goal (or board centre if the
            treasure is on the spare tile) */
-        const aim = goal || [3,3];
+        const aim = goal || [mid,mid];
         let bd = Infinity, bc = [me.row, me.col], mob = 0;
-        for(let r=0;r<7;r++) for(let c=0;c<7;c++) if(set[r][c]){
+        for(let r=0;r<n;r++) for(let c=0;c<n;c++) if(set[r][c]){
           mob++;
           const d = Math.abs(r-aim[0]) + Math.abs(c-aim[1]);
           if(d < bd){ bd=d; bc=[r,c]; }
@@ -556,13 +641,14 @@ function aiGreedy(state){
 }
 
 /* Where a cell ends up after a push (mirrors pawn-shift rules). */
-function shiftCell(cell, insert){
+function shiftCell(cell, insert, n){
+  const last = (n || 7) - 1;
   let [r,c] = cell;
   const {side, index} = insert;
-  if(side==='N' && c===index){ r++; if(r>6) r=0; }
-  else if(side==='S' && c===index){ r--; if(r<0) r=6; }
-  else if(side==='W' && r===index){ c++; if(c>6) c=0; }
-  else if(side==='E' && r===index){ c--; if(c<0) c=6; }
+  if(side==='N' && c===index){ r++; if(r>last) r=0; }
+  else if(side==='S' && c===index){ r--; if(r<0) r=last; }
+  else if(side==='W' && r===index){ c++; if(c>last) c=0; }
+  else if(side==='E' && r===index){ c--; if(c<0) c=last; }
   return [r,c];
 }
 
@@ -596,8 +682,9 @@ function countGoalReaching(state, pIdx){
    it to my goal. (Connectivity is symmetric, so one BFS from the goal per
    push covers every candidate cell at once.) */
 function selfPotential(state, meIdx, targetId){
+  const n = sizeOf(state);
   const me = state.players[meIdx];
-  const pot = Array.from({length:7}, ()=>Array(7).fill(0));
+  const pot = Array.from({length:n}, ()=>Array(n).fill(0));
   for(const ins of legalInserts(state)){
     for(const open of distinctRotations(state.spare.open)){
       const s3 = cloneState(state);
@@ -605,8 +692,8 @@ function selfPotential(state, meIdx, targetId){
       const g = targetId===null ? me.start : findTreasure(s3, targetId);
       if(!g) continue;
       const back = bfs(s3, g[0], g[1]);
-      for(let r=0;r<7;r++) for(let c=0;c<7;c++){
-        const [sr,sc] = shiftCell([r,c], ins);
+      for(let r=0;r<n;r++) for(let c=0;c<n;c++){
+        const [sr,sc] = shiftCell([r,c], ins, n);
         if(back.set[sr][sc]) pot[r][c]++;
       }
     }
@@ -615,6 +702,7 @@ function selfPotential(state, meIdx, targetId){
 }
 
 function aiHard(state){
+  const n = sizeOf(state), mid = (n-1)/2;
   const meIdx = state.current;
   const targetId = currentTargetId(state.players[meIdx]);
   const oppIdx = nextActivePlayer(state);
@@ -639,9 +727,9 @@ function aiHard(state){
       } else {
         /* blocked: stand where the most follow-up pushes reconnect me */
         const pot = selfPotential(s2, meIdx, targetId);
-        const aim = goal || [3,3];
+        const aim = goal || [mid,mid];
         let bs = -Infinity, bc = [me.row, me.col];
-        for(let r=0;r<7;r++) for(let c=0;c<7;c++) if(reach.set[r][c]){
+        for(let r=0;r<n;r++) for(let c=0;c<n;c++) if(reach.set[r][c]){
           const v = pot[r][c]*100 - (Math.abs(r-aim[0])+Math.abs(c-aim[1]))*5;
           if(v > bs){ bs=v; bc=[r,c]; }
         }
@@ -663,6 +751,7 @@ function aiHard(state){
 
 if(typeof module!=='undefined') module.exports = {
   N,E,S,W, rot, distinctRotations, TREASURES, FIXED, PLAYER_DEFS,
+  SIZES, CONFIG, fixedLayout, cornerPos, sizeOf, shiftCell,
   newGame, cloneState, legalInserts, applyPush, bfs, pathTo,
   currentTargetId, findTreasure, applyMove, aiChooseMove,
 };
@@ -678,6 +767,7 @@ let state = null;
 let busy = false;          /* true while AI is animating */
 let numOpponents = 1;
 let aiLevel = 'hard';
+let boardSize = 7;         /* board size for the next full game */
 let logLines = [];
 let uiLastMove = null;     /* {from:[r,c], to:[r,c], color} — pawn move highlight */
 let pawnArms = [null,null,null,null]; /* which path-arm each pawn rests on */
@@ -737,9 +827,13 @@ let cellEls = null; /* 7x7 cell elements, for hover previews */
 function render(opts){
   opts = opts || {};
   const slide = opts.slide;
+  const n = state.size || 7, last = n-1;
+  document.body.style.setProperty('--bn', n);
   const grid = $('boardGrid');
+  grid.style.gridTemplateColumns = `var(--edge) repeat(${n}, var(--cell)) var(--edge)`;
+  grid.style.gridTemplateRows    = `var(--edge) repeat(${n}, var(--cell)) var(--edge)`;
   grid.innerHTML = '';
-  cellEls = Array.from({length:7}, ()=>Array(7).fill(null));
+  cellEls = Array.from({length:n}, ()=>Array(n).fill(null));
   const human = state.players[0];
   const isHumanTurn = state.current===0 && state.winners===null && !busy
                    && !(puzzle && (puzzle.solved || puzzle.failed));
@@ -766,11 +860,13 @@ function render(opts){
     });
 
   /* arrows */
+  const insIdx = [];
+  for(let i=1;i<last;i+=2) insIdx.push(i);
   const arrowDefs = [
-    ...[1,3,5].map(i => ({side:'N', index:i, glyph:'▼', gr:1,    gc:i+2})),
-    ...[1,3,5].map(i => ({side:'S', index:i, glyph:'▲', gr:9,    gc:i+2})),
-    ...[1,3,5].map(i => ({side:'W', index:i, glyph:'▶', gr:i+2,  gc:1})),
-    ...[1,3,5].map(i => ({side:'E', index:i, glyph:'◀', gr:i+2,  gc:9})),
+    ...insIdx.map(i => ({side:'N', index:i, glyph:'▼', gr:1,    gc:i+2})),
+    ...insIdx.map(i => ({side:'S', index:i, glyph:'▲', gr:n+2,  gc:i+2})),
+    ...insIdx.map(i => ({side:'W', index:i, glyph:'▶', gr:i+2,  gc:1})),
+    ...insIdx.map(i => ({side:'E', index:i, glyph:'◀', gr:i+2,  gc:n+2})),
   ];
   for(const a of arrowDefs){
     const div = document.createElement('div');
@@ -802,8 +898,8 @@ function render(opts){
   const entryMap = {};
   if(isHumanTurn && state.phase==='push')
     for(const ins of legal){
-      const e = ins.side==='N' ? [0,ins.index] : ins.side==='S' ? [6,ins.index]
-              : ins.side==='W' ? [ins.index,0] : [ins.index,6];
+      const e = ins.side==='N' ? [0,ins.index] : ins.side==='S' ? [last,ins.index]
+              : ins.side==='W' ? [ins.index,0] : [ins.index,last];
       entryMap[e[0]+','+e[1]] = ins;
     }
 
@@ -811,18 +907,19 @@ function render(opts){
   let dealDelays = null;
   if(opts.deal){
     const keys = [];
-    for(let r=0;r<7;r++) for(let c=0;c<7;c++)
+    for(let r=0;r<n;r++) for(let c=0;c<n;c++)
       if(!state.board[r][c].fixed) keys.push(r+','+c);
     for(let i=keys.length-1;i>0;i--){
       const j = Math.floor(Math.random()*(i+1));
       [keys[i],keys[j]] = [keys[j],keys[i]];
     }
     dealDelays = {};
-    keys.forEach((k,i)=> dealDelays[k] = 0.35 + i*0.045);
+    const step = Math.min(0.045, 1.45/keys.length); /* big boards deal faster */
+    keys.forEach((k,i)=> dealDelays[k] = 0.35 + i*step);
   }
 
   /* board cells */
-  for(let r=0;r<7;r++) for(let c=0;c<7;c++){
+  for(let r=0;r<n;r++) for(let c=0;c<n;c++){
     const cell = document.createElement('div');
     cell.className = 'cell';
     cell.style.gridRow = r+2; cell.style.gridColumn = c+2;
@@ -950,7 +1047,7 @@ function render(opts){
   /* treasure tracker: bright = not yet seen by anyone (possible AI target) */
   const foundBy = new Map();
   state.players.forEach(p => p.found.forEach(t => foundBy.set(t, p.color)));
-  $('tracker').innerHTML = TREASURES.map((t,i)=>{
+  $('tracker').innerHTML = TREASURES.slice(0, CONFIG[n].treasures).map((t,i)=>{
     const seen = foundBy.has(i);
     const cls = 'tr' + (seen?' seen':'') + (i===humanTarget?' target':'');
     const dot = seen ? `<span class="dot" style="background:${foundBy.get(i)}"></span>` : '';
@@ -982,7 +1079,7 @@ function resultText(){
 function setLinePreview(a, on){
   if(!cellEls) return;
   const vertical = (a.side==='N'||a.side==='S');
-  for(let i=0;i<7;i++){
+  for(let i=0;i<cellEls.length;i++){
     const cell = vertical ? cellEls[i][a.index] : cellEls[a.index][i];
     if(cell) cell.classList.toggle('previewLine', on);
   }
@@ -993,7 +1090,7 @@ function setLinePreview(a, on){
 const EDGE_F = 0.38;
 function gridMetrics(){
   const w = $('boardGrid').getBoundingClientRect().width;
-  const cs = w/(7 + 2*EDGE_F);
+  const cs = w/((state ? state.size||7 : 7) + 2*EDGE_F);
   return {cs, edge: cs*EDGE_F};
 }
 
@@ -1005,10 +1102,11 @@ function animateSpareOff(insert){
   const gRect = grid.getBoundingClientRect();
   const {cs, edge} = gridMetrics();
   const {side, index} = insert;
+  const last = (state.size||7)-1;
   let r, c, dr, dc; /* exit cell + outward direction */
-  if(side==='N'){ r=6; c=index; dr=1; dc=0; }
+  if(side==='N'){ r=last; c=index; dr=1; dc=0; }
   else if(side==='S'){ r=0; c=index; dr=-1; dc=0; }
-  else if(side==='W'){ r=index; c=6; dr=0; dc=1; }
+  else if(side==='W'){ r=index; c=last; dr=0; dc=1; }
   else { r=index; c=0; dr=0; dc=-1; }
   const onlyT = puzzle
     ? (puzzle.data.type==='block1' ? puzzle.data.opp.target : puzzle.data.me.target)
@@ -1212,9 +1310,9 @@ function runAITurns(){
 
 function startGame(){
   puzzle = null;
-  state = newGame(1 + numOpponents, Math.floor(Math.random()*2**31));
+  state = newGame(1 + numOpponents, Math.floor(Math.random()*2**31), boardSize);
   logLines = [];
-  log(`New game: you vs ${numOpponents} AI opponent${numOpponents>1?'s':''}. Good luck!`);
+  log(`New game (${boardSize}×${boardSize}): you vs ${numOpponents} AI opponent${numOpponents>1?'s':''}. Good luck!`);
   uiLastMove = null;
   pawnArms = [null,null,null,null];
   streaks  = [0,0,0,0];
@@ -1245,11 +1343,12 @@ function markSolved(id){
 }
 
 function rebuildPuzzle(p){
+  const n = p.size || 7;
   const board = [];
   let k = 0;
-  for(let r=0;r<7;r++){
+  for(let r=0;r<n;r++){
     const row = [];
-    for(let c=0;c<7;c++){
+    for(let c=0;c<n;c++){
       const [open, tr] = p.board[k++];
       row.push({open, treasure: tr<0?null:tr, fixed: r%2===0 && c%2===0});
     }
@@ -1261,6 +1360,7 @@ function rebuildPuzzle(p){
     turns:0, done:false, isAI: idx===1,
   });
   return {
+    size: n,
     board,
     spare: {open: p.spare[0], treasure: p.spare[1]<0?null:p.spare[1], fixed:false},
     /* collect puzzles are pure solitaire — Blue only appears in block puzzles */
@@ -1290,12 +1390,15 @@ function puzzleGoalText(p){
 }
 
 const PZ_NAMES = {collect1:'Collect in 1', collect2:'Collect in 2', block1:'Block'};
+function pzSize(p){ return p.size || 7; }
 function puzzleLabel(p){
-  const idx = PUZZLES.puzzles.filter(q=>q.type===p.type).findIndex(q=>q.id===p.id);
-  return `${PZ_NAMES[p.type]} #${idx+1}`;
+  const idx = PUZZLES.puzzles.filter(q=>q.type===p.type && pzSize(q)===pzSize(p))
+                             .findIndex(q=>q.id===p.id);
+  const sz = pzSize(p)===7 ? '' : `${pzSize(p)}×${pzSize(p)} `;
+  return `${sz}${PZ_NAMES[p.type]} #${idx+1}`;
 }
 function dailyFor(type){
-  const list = PUZZLES.puzzles.filter(p=>p.type===type);
+  const list = PUZZLES.puzzles.filter(p=>p.type===type && pzSize(p)===7);
   const d = new Date();
   const key = d.getFullYear()*10000 + (d.getMonth()+1)*100 + d.getDate();
   return list[(key * 48271) % list.length];
@@ -1340,6 +1443,7 @@ function pzOppOptions(s){
 }
 function pzStillSolvable2(s){
   /* exists reachable cell from which some own follow-up push reaches goal */
+  const n = s.size || 7;
   const me = s.players[0];
   const tid = currentTargetId(me);
   const reach = bfs(s, me.row, me.col);
@@ -1349,13 +1453,8 @@ function pzStillSolvable2(s){
     const g = tid===null ? me.start : findTreasure(s2, tid);
     if(!g) continue;
     const back = bfs(s2, g[0], g[1]);
-    for(let r=0;r<7;r++) for(let c=0;c<7;c++) if(reach.set[r][c]){
-      let sr=r, sc=c;
-      const {side,index} = ph.insert;
-      if(side==='N' && c===index){ sr=r+1>6?0:r+1; }
-      else if(side==='S' && c===index){ sr=r-1<0?6:r-1; }
-      else if(side==='W' && r===index){ sc=c+1>6?0:c+1; }
-      else if(side==='E' && r===index){ sc=c-1<0?6:c-1; }
+    for(let r=0;r<n;r++) for(let c=0;c<n;c++) if(reach.set[r][c]){
+      const [sr,sc] = shiftCell([r,c], ph.insert, n);
       if(back.set[sr][sc]) return true;
     }
   }
@@ -1530,7 +1629,7 @@ function updatePuzzleUI(){
   if(puzzle.showSol && cellEls && !puzzle.solved){
     const ins = puzzle.showSolIns || puzzle.data.solution.insert;
     const vertical = ins.side==='N'||ins.side==='S';
-    for(let i=0;i<7;i++){
+    for(let i=0;i<cellEls.length;i++){
       const cell = vertical ? cellEls[i][ins.index] : cellEls[ins.index][i];
       if(cell) cell.classList.add('previewLine');
     }
@@ -1552,11 +1651,16 @@ function openPuzzlePicker(dailyOnly){
   } else {
     $('pzTitle').textContent = 'PUZZLES';
     $('pzDesc').textContent = 'Find every winning push — some puzzles have more than one. Gold = solved.';
-    const groups = [
-      ['Collect in 1 — find the only push that reaches your treasure', p=>p.type==='collect1'],
-      ['Collect in 2 — plan two of your turns ahead', p=>p.type==='collect2'],
-      ['Block! — stop Blue from reaching their treasure', p=>p.type==='block1'],
+    const typeTitles = [
+      ['collect1', 'Collect in 1 — find the only push that reaches your treasure'],
+      ['collect2', 'Collect in 2 — plan two of your turns ahead'],
+      ['block1',   'Block! — stop Blue from reaching their treasure'],
     ];
+    const groups = [];
+    for(const sz of [7,5,9])
+      for(const [ty, title] of typeTitles)
+        groups.push([(sz===7 ? '' : sz+'×'+sz+' · ')+title,
+                     p=>p.type===ty && pzSize(p)===sz]);
     $('puzzleList').innerHTML = groups.map(([title, f])=>{
       const items = PUZZLES.puzzles.filter(f);
       if(!items.length) return '';
@@ -1658,6 +1762,13 @@ document.querySelectorAll('.oppBtns button[data-n]').forEach(b=>{
     document.querySelectorAll('.oppBtns button[data-n]').forEach(x=>x.classList.remove('sel'));
     b.classList.add('sel');
     numOpponents = +b.dataset.n;
+  };
+});
+document.querySelectorAll('.sizeBtns button').forEach(b=>{
+  b.onclick = ()=>{
+    document.querySelectorAll('.sizeBtns button').forEach(x=>x.classList.remove('sel'));
+    b.classList.add('sel');
+    boardSize = +b.dataset.s;
   };
 });
 document.querySelectorAll('.diffBtns button').forEach(b=>{
