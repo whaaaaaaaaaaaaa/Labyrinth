@@ -76,6 +76,16 @@ UI completion: multi-solution puzzles require finding ALL lines (foundSols set).
 - HAZARD: engine + UI scripts share the page's global scope — an engine
   function name colliding with a UI `let` (e.g. boardSize) is a page-killing
   SyntaxError. Engine's size helper is therefore named `sizeOf`.
+- Themes (UI layer only, engine untouched): `THEMES` config + `applyTheme(id)`.
+  'classic' MUST stay pixel-identical to the original art (smoke-tested against
+  the pre-theme build). Patterns are regenerated into `#themeDefs` keeping ids
+  cobble/cobbleF/dirt stable; palette flows through CSS vars --bg/--panel/--box/
+  --line/--accent/--dim (--box/--line replaced former hardcoded #1f2433/#444c63).
+  Per-theme `flourish(tile)` adds extras (hedge: leaves/flowers/moss; obsidian:
+  embers/cracks) — deterministic via `tileRand(tile)` so re-renders don't
+  flicker; flourishes only in the four always-wall 33×33 corners or the
+  always-path centre. Switchers: menu .themeBtns, sidebar #themeBtn (cycles),
+  puzzle #pzThemeBtn. Persisted as localStorage `labyrinthTheme`.
 
 ## Testing workflow
 Engine tests live as throwaway scripts (see history): extract engine via regex
