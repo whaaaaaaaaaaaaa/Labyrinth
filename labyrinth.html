@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#1d2230">
 <title>Labyrinth</title>
 <!-- v1.1: move highlighting, push animation, cobble/dirt art, treasure tracker -->
 <style>
@@ -16,7 +17,8 @@
   }
   *{box-sizing:border-box; margin:0; padding:0;}
   body{background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif;
-       display:flex; align-items:center; justify-content:center; min-height:100vh; gap:24px; padding:16px;}
+       display:flex; align-items:center; justify-content:center; min-height:100vh; gap:24px; padding:16px;
+       touch-action:manipulation; -webkit-tap-highlight-color:transparent;}
   #sidebar{width:300px; background:var(--panel); border-radius:14px; padding:18px; display:flex; flex-direction:column; gap:14px; max-height:calc((var(--bn) + 0.76)*var(--cell)); overflow-y:auto;}
   #rightbar{width:230px; background:var(--panel); border-radius:14px; padding:18px; display:flex; flex-direction:column; gap:14px; max-height:calc((var(--bn) + 0.76)*var(--cell)); overflow-y:auto;}
   h1{font-size:1.4em; color:var(--accent); letter-spacing:2px;}
@@ -34,14 +36,12 @@
   #cardName{font-size:.95em;}
   #spareBox{background:var(--box); border-radius:10px; padding:12px; text-align:center;}
   #spareWrap{width:calc(var(--cell)*1.1); height:calc(var(--cell)*1.1); margin:8px auto 4px; cursor:pointer; border-radius:8px; transition:transform .15s;}
-  #spareWrap:hover{transform:scale(1.06);}
   #hint{font-size:.85em; color:var(--accent); min-height:2.4em; text-align:center;}
   #log{background:var(--box); border-radius:10px; padding:10px; font-size:.8em; color:var(--dim);
        flex:1; min-height:90px; max-height:200px; overflow-y:auto; display:flex; flex-direction:column-reverse;}
   #log div{padding:1px 0;}
   button{background:var(--accent); color:#222; border:none; border-radius:8px; padding:9px 14px;
          font-weight:600; cursor:pointer; font-size:.95em;}
-  button:hover{filter:brightness(1.1);}
   #boardGrid{display:grid; position:relative;
        grid-template-columns:var(--edge) repeat(7, var(--cell)) var(--edge);
        grid-template-rows:var(--edge) repeat(7, var(--cell)) var(--edge);}
@@ -49,17 +49,13 @@
   .cell svg{width:100%; height:100%; display:block; border-radius:6px;}
   .cell.reach{cursor:pointer;}
   .cell.pushable{cursor:pointer;}
-  .cell.pushable:hover{filter:brightness(1.18);}
   .cell.reach::after{content:''; position:absolute; inset:2px; border-radius:6px;
        background:var(--reach); border:2px solid var(--reach-border); pointer-events:none;}
   .arrow{display:flex; align-items:center; justify-content:center; font-size:calc(var(--edge)*0.78);
          color:var(--accent); cursor:pointer; opacity:.75; transition:opacity .12s, transform .12s; user-select:none;}
-  .arrow:hover{opacity:1; transform:scale(1.25);}
   .arrow.forbidden{font-size:calc(var(--edge)*0.9); font-weight:800; color:#e63946; opacity:.9;
        cursor:not-allowed; text-shadow:0 1px 5px #000b;}
-  .arrow.forbidden:hover{opacity:1; transform:none;}
   .arrow.inactive{opacity:.15; cursor:default;}
-  .arrow.inactive:hover{opacity:.15; transform:none;}
   .arrow.used{opacity:1 !important; text-shadow:0 0 10px var(--accent);}
   /* hovering an arrow previews the row/column it would shift */
   .cell.previewLine{filter:brightness(1.18);}
@@ -128,6 +124,7 @@
   .homeRing{position:absolute; inset:30%; border-radius:50%; border:3px dashed; opacity:.65; pointer-events:none;}
   #overlay, #puzzleOverlay{position:fixed; inset:0; background:#000a; display:flex; align-items:center; justify-content:center; z-index:10;}
   #overlay .panel, #puzzleOverlay .panel{background:var(--panel); border-radius:16px; padding:34px 44px; text-align:center; max-width:430px;}
+  #puzzleOverlay .panel{max-width:640px; max-height:82vh; overflow-y:auto;}
   #overlay h2, #puzzleOverlay h2{color:var(--accent); margin-bottom:14px;}
   #overlay p, #puzzleOverlay p{color:var(--dim); margin-bottom:18px; font-size:.95em; line-height:1.5;}
   /* puzzle picker + in-game puzzle panel */
@@ -135,7 +132,6 @@
   .pzChips{display:flex; flex-wrap:wrap; gap:6px; margin-top:6px;}
   .pzChip{min-width:34px; padding:5px 7px; border-radius:7px; background:var(--box); color:var(--text);
        border:2px solid var(--line); cursor:pointer; font-size:.82em; font-weight:600;}
-  .pzChip:hover{border-color:var(--accent);}
   .pzChip.solved{background:#3a3217; color:var(--accent); border-color:var(--accent);}
   #puzzleBox{background:var(--box); border-radius:10px; padding:12px; text-align:center;}
   #puzzleGoal{font-size:.88em; margin:8px 0; line-height:1.45;}
@@ -154,6 +150,44 @@
   .seatRow .oppBtns{margin-bottom:0;}
   .seatRow .oppBtns button{min-width:54px; padding:7px 10px;}
   .hidden{display:none !important;}
+  .mobHint{display:none;}
+  /* hover affordances only where a real pointer hovers — on touch they
+     would stick to whatever was tapped last */
+  @media (hover:hover){
+    button:hover{filter:brightness(1.1);}
+    #spareWrap:hover{transform:scale(1.06);}
+    .cell.pushable:hover{filter:brightness(1.18);}
+    .arrow:hover{opacity:1; transform:scale(1.25);}
+    .arrow.forbidden:hover{opacity:1; transform:none;}
+    .arrow.inactive:hover{opacity:.15; transform:none;}
+    .pzChip:hover{border-color:var(--accent);}
+  }
+  /* ---- Mobile V1: stacked portrait layout — board on top, then the
+     spare/card strip, then (game mode) scoreboard + log. Sized for 5×5
+     first; 7×7/9×9 shrink to fit the width. ---- */
+  @media (max-width: 880px){
+    :root, body.puzzleMode{
+      --cell: min(calc((100vw - 16px)/(var(--bn) + 0.8)), calc((100vh - 280px)/var(--bn)), 96px);
+      --cell: min(calc((100vw - 16px)/(var(--bn) + 0.8)), calc((100dvh - 280px)/var(--bn)), 96px);
+    }
+    body{flex-direction:column; justify-content:flex-start; gap:10px; padding:8px;}
+    #boardGrid{order:-1;}
+    #sidebar{order:1;}
+    #sidebar, #rightbar{width:100%; max-width:calc((var(--bn) + 0.8)*var(--cell));
+         max-height:none; padding:12px; gap:10px;}
+    #rightbar{flex-direction:row; flex-wrap:wrap; align-items:stretch;}
+    #cardBox, #spareBox{flex:1 1 0; min-width:0; padding:8px 6px;}
+    #cardEmoji{font-size:2.1em;}
+    #spareWrap{margin:4px auto 2px;}
+    #puzzleBox, #hint{flex:1 1 100%;}
+    #hint{min-height:0;}
+    h1{display:none;}
+    #log{min-height:48px; max-height:110px;}
+    #overlay .panel, #puzzleOverlay .panel{max-width:94vw; padding:24px 16px;
+         max-height:88vh; overflow-y:auto;}
+    .deskHint{display:none;}
+    .mobHint{display:inline;}
+  }
 </style>
 </head>
 <body>
@@ -211,7 +245,7 @@
     <div id="cardName"></div>
   </div>
   <div id="spareBox">
-    <div class="label">Spare tile — click or Space to rotate</div>
+    <div class="label">Spare tile — <span class="deskHint">click or Space</span><span class="mobHint">tap</span> to rotate</div>
     <div id="spareWrap"></div>
   </div>
   <div id="puzzleBox" class="hidden">
@@ -232,7 +266,7 @@
 </div>
 
 <div id="puzzleOverlay" class="hidden">
-  <div class="panel" style="max-width:640px; max-height:82vh; overflow-y:auto;">
+  <div class="panel">
     <h2 id="pzTitle">PUZZLES</h2>
     <p id="pzDesc">Every puzzle has exactly one correct push. Gold = solved.</p>
     <div id="puzzleList"></div>
@@ -1565,8 +1599,9 @@ function puzzleLabel(p){
   const sz = pzSize(p)===7 ? '' : `${pzSize(p)}×${pzSize(p)} `;
   return `${sz}${PZ_NAMES[p.type]} #${idx+1}`;
 }
+/* dailies come from the 5×5 set: quick boards that fit a phone screen */
 function dailyFor(type){
-  const list = PUZZLES.puzzles.filter(p=>p.type===type && pzSize(p)===7);
+  const list = PUZZLES.puzzles.filter(p=>p.type===type && pzSize(p)===5);
   const d = new Date();
   const key = d.getFullYear()*10000 + (d.getMonth()+1)*100 + d.getDate();
   return list[(key * 48271) % list.length];

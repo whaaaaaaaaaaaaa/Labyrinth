@@ -67,12 +67,22 @@ UI completion: multi-solution puzzles require finding ALL lines (foundSols set).
   fades 5.5s); spare tile flies off-board to panel; deal-in cascade ~2.4s.
 - Keyboard: Space/→/↓/R rotate spare CW, ←/↑ CCW.
 - localStorage: `labyrinthPuzzlesSolved` (ids).
-- Daily: date-hashed pick per type (`dailyFor`), cycles only today's 3 — 7×7 only
-  (deliberate: streak continuity). Picker groups puzzles by size (7×7, 5×5, 9×9).
+- Daily: date-hashed pick per type (`dailyFor`), cycles only today's 3 — 5×5 only
+  (mobile-first: quick boards that fit a phone). Picker groups puzzles by size
+  (7×7, 5×5, 9×9).
 - Board size: `boardSize` global (menu sizeBtns) → `newGame(.., boardSize)`;
   render() sets CSS `--bn` + inline grid-template from `state.size`. Cell size,
   panel heights and puzzleMode all derive from --bn. Deal stagger is adaptive
   (`min(0.045, 1.45/movables)`) so 9×9 deals in the same ~2.4s window.
+- Mobile (V1): `@media (max-width:880px)` stacks the page — board first
+  (`order:-1`), then #rightbar as a wrapping row (card + spare side by side,
+  puzzle box / hint full-width), then #sidebar (h1 hidden). `--cell` switches
+  to a width-driven formula `(100vw - 16px)/(--bn + 0.8)` (dvh-capped, 96px
+  max); the same override covers body.puzzleMode. Hover affordances live in
+  `@media (hover:hover)` so taps don't stick; body sets
+  `touch-action:manipulation` (kills double-tap zoom). `.deskHint`/`.mobHint`
+  spans swap label wording. #puzzleOverlay panel sizing moved from inline
+  style into CSS so the mobile query can override it.
 - HAZARD: engine + UI scripts share the page's global scope — an engine
   function name colliding with a UI `let` (e.g. boardSize) is a page-killing
   SyntaxError. Engine's size helper is therefore named `sizeOf`.
@@ -105,7 +115,8 @@ GitHub Desktop → commit to main → Push origin → Pages redeploys in ~1 min.
 CDN + browser cache can serve stale for ~10 min: hard refresh (Ctrl+F5).
 
 ## Roadmap / parked ideas
-1. Mobile-responsive layout (PWA) — edge-tap pushing already touch-friendly.
+1. ~~Mobile-responsive layout~~ V1 DONE (stacked CSS, 5×5-first). Still parked:
+   PWA manifest/offline, bigger 9×9 touch targets, swipe-to-push.
 2. Correspondence multiplayer (server reuses engine; turn-based, DB + notifications).
 3. Daily challenge polish: streaks, shareable results, curated calendar.
 4. ~~Variable board sizes~~ DONE (5×5/9×9 shipped; 11×11 would only need a
