@@ -37,6 +37,15 @@ Faithful 7×7 board: 16 fixed tiles (now red brick), 34 movable (13 I, 15 L, 6 T
 completes so all players get equal turns; all finishers share the win (draws possible).
 **Public targets** (deliberate deviation): every player's current objective pulses
 in their colour on the board.
+**Local multiplayer (hotseat)**: game setup has per-seat toggles — Opponent 1 is
+AI|Human, Opponents 2–3 are Off|AI|Human; mixed human+AI lineups work. Engine:
+`newGame(n, seed, size, humanSeats)` — optional bool array; omitted = seat 0 human,
+rest AI (back-compat; doesn't touch RNG, so seeds stay reproducible). UI is
+current-player-driven: input guards / reach highlight / card box / tracker follow
+`state.players[state.current]` when human (`isHumanTurn = !cur.isAI && …`). Solo
+games keep the "You" voice via `isSolo()`/`who(i)`; hotseat uses colour names,
+tints #hint in the active player's colour (handoff banner), tags AI rows 🤖.
+No privacy screen needed — targets are public by design.
 
 ## AI (engine)
 - `aiChooseMove(state, level)` — level 'hard' (default in UI) or standard (greedy).
@@ -107,6 +116,7 @@ CDN + browser cache can serve stale for ~10 min: hard refresh (Ctrl+F5).
 ## Roadmap / parked ideas
 1. Mobile-responsive layout (PWA) — edge-tap pushing already touch-friendly.
 2. Correspondence multiplayer (server reuses engine; turn-based, DB + notifications).
+   Local hotseat DONE — online play is the remaining piece.
 3. Daily challenge polish: streaks, shareable results, curated calendar.
 4. ~~Variable board sizes~~ DONE (5×5/9×9 shipped; 11×11 would only need a
    CONFIG entry + puzzle mining — engine/UI/miner are fully N-generic).

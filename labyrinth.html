@@ -65,6 +65,65 @@
   .cell.previewLine{filter:brightness(1.18);}
   .cell.previewLine::before{content:''; position:absolute; inset:2px; border-radius:6px;
        box-shadow:inset 0 0 0 3px #e9c46aaa; pointer-events:none; z-index:2;}
+  /* directional arrows: white + dark shadow for contrast on all themes;
+     flow animation drifts each arrow in the push direction, giving a streaming effect */
+  .cell.pushN::after,.cell.pushS::after,.cell.pushW::after,.cell.pushE::after{
+       position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+       font-size:calc(var(--cell)*0.42); color:#fff;
+       text-shadow:0 0 10px #000,0 0 5px #000b,0 1px 3px #000;
+       pointer-events:none; z-index:3;}
+  .cell.pushN::after{content:'▼'; animation:flowN 1.6s ease-in-out infinite;}
+  .cell.pushS::after{content:'▲'; animation:flowS 1.6s ease-in-out infinite;}
+  .cell.pushW::after{content:'▶'; animation:flowW 1.6s ease-in-out infinite;}
+  .cell.pushE::after{content:'◀'; animation:flowE 1.6s ease-in-out infinite;}
+  @keyframes flowN{
+    0%  {opacity:0; transform:translateY(-35%);}
+    18% {opacity:.88;}
+    52% {opacity:.88;}
+    75% {opacity:0;  transform:translateY(35%);}
+    100%{opacity:0;  transform:translateY(35%);}}
+  @keyframes flowS{
+    0%  {opacity:0; transform:translateY(35%);}
+    18% {opacity:.88;}
+    52% {opacity:.88;}
+    75% {opacity:0;  transform:translateY(-35%);}
+    100%{opacity:0;  transform:translateY(-35%);}}
+  @keyframes flowW{
+    0%  {opacity:0; transform:translateX(-35%);}
+    18% {opacity:.88;}
+    52% {opacity:.88;}
+    75% {opacity:0;  transform:translateX(35%);}
+    100%{opacity:0;  transform:translateX(35%);}}
+  @keyframes flowE{
+    0%  {opacity:0; transform:translateX(35%);}
+    18% {opacity:.88;}
+    52% {opacity:.88;}
+    75% {opacity:0;  transform:translateX(-35%);}
+    100%{opacity:0;  transform:translateX(-35%);}}
+  /* ghost spare tile that follows the cursor on the board in push phase */
+  #spareCursor{position:fixed; pointer-events:none; z-index:9; display:none;
+       opacity:.52; border-radius:8px; overflow:hidden;
+       box-shadow:0 0 0 2px #e9c46a66, 0 4px 18px #0009;}
+  #spareCursor svg{display:block; border-radius:8px;}
+  /* puzzle orientation tooltips shown after deal */
+  .pzOrient{position:fixed; transform:translateX(-50%); background:#1f2433ee;
+       color:var(--accent); font-size:.82em; font-weight:600; padding:5px 10px;
+       border-radius:8px; border:1px solid #e9c46a88; pointer-events:none;
+       z-index:20; white-space:nowrap; animation:pzOrientFade 3.5s ease-out forwards;}
+  /* collect2 show-solution: valid intermediate pawn destinations */
+  .cell.solDest::before{content:'★'; position:absolute; inset:0; display:flex;
+       align-items:center; justify-content:center;
+       font-size:calc(var(--cell)*.52); color:#f4a261;
+       text-shadow:0 0 14px #f4a261,0 0 7px #000,0 2px 8px #000;
+       pointer-events:none; z-index:5; animation:solDestPulse 1.4s ease-in-out infinite;}
+  @keyframes solDestPulse{
+       0%,100%{opacity:.55; transform:scale(.88);}
+       50%{opacity:1; transform:scale(1.12);}}
+  @keyframes pzOrientFade{
+       0%{opacity:0; transform:translateX(-50%) translateY(-10px);}
+       18%{opacity:1; transform:translateX(-50%) translateY(0);}
+       70%{opacity:1;}
+       100%{opacity:0; transform:translateX(-50%) translateY(-4px);}}
   /* last-move marks (Lichess-style) */
   .mark{position:absolute; inset:2px; border-radius:6px; pointer-events:none;}
   .mark.movefrom{border:3px dashed currentColor; opacity:.75;}
@@ -220,7 +279,6 @@
     <div id="puzzleStats"></div>
     <div id="puzzleBtns">
       <button id="pzUndoBtn" class="hidden">Undo</button>
-      <button id="pzRetryBtn">Retry</button>
       <button id="pzHintBtn">💡 Hint</button>
       <button id="pzSolBtn" class="hidden">Show solution</button>
       <button id="pzNextBtn" class="hidden">Next puzzle</button>
@@ -239,6 +297,8 @@
     <button id="puzzleBackBtn" style="margin-top:14px;">Back</button>
   </div>
 </div>
+
+<div id="spareCursor"></div>
 
 <div id="overlay">
   <div class="panel">
@@ -1225,6 +1285,7 @@ function render(opts){
   $('log').innerHTML = logLines.slice(-40).map(l=>`<div>${l}</div>`).reverse().join('');
 
   updatePuzzleUI();
+  updateSpareCursor();
 }
 
 function log(msg){ logLines.push(msg); }
@@ -1240,13 +1301,68 @@ function resultText(){
   return names[0]==='You' ? 'You win!' : names[0] + ' wins!';
 }
 
+/* Ghost spare cursor ------------------------------------------ */
+let spareCursorPos = null; /* {x,y} in viewport px, or null = off board */
+let _spareCursorSVG = '';  /* cached SVG; only rebuilt when spare changes */
+
+function updateSpareCursor(){
+  const el = $('spareCursor');
+  if(!el) return;
+  const canShow = spareCursorPos && state && !busy && !dealing && !spareFlying
+    && state.phase === 'push'
+    && !state.players[state.current].isAI
+    && state.winners === null
+    && !(puzzle && (puzzle.solved || puzzle.failed));
+  if(!canShow){ el.style.display = 'none'; return; }
+  /* rebuild SVG only when spare tile actually changed (rotation / new game) */
+  const svgStr = tileSVG(state.spare, new Set(), null);
+  if(svgStr !== _spareCursorSVG){
+    _spareCursorSVG = svgStr;
+    el.innerHTML = svgStr;
+  }
+  const {cs} = gridMetrics();
+  el.style.width  = cs + 'px';
+  el.style.height = cs + 'px';
+  el.style.left   = (spareCursorPos.x - cs/2) + 'px';
+  el.style.top    = (spareCursorPos.y - cs/2) + 'px';
+  el.style.display = 'block';
+}
+/* ------------------------------------------------------------ */
+
 function setLinePreview(a, on){
   if(!cellEls) return;
   const vertical = (a.side==='N'||a.side==='S');
   for(let i=0;i<cellEls.length;i++){
     const cell = vertical ? cellEls[i][a.index] : cellEls[a.index][i];
-    if(cell) cell.classList.toggle('previewLine', on);
+    if(!cell) continue;
+    cell.classList.toggle('previewLine', on);
+    cell.classList.toggle('push'+a.side, on);
+    if(!on) cell.classList.remove('pushN','pushS','pushW','pushE');
   }
+}
+
+/* Orientation popups after puzzle deal: "you are here" / "go here" */
+function showPuzzleOrientation(){
+  if(!puzzle || !cellEls) return;
+  const grid = $('boardGrid');
+  const gRect = grid.getBoundingClientRect();
+  const {cs, edge} = gridMetrics();
+  const me = puzzle.base.players[0];
+  const tid = currentTargetId(me);
+  const tCell = tid===null ? me.start : findTreasure(puzzle.base, tid);
+  function makeTooltip(row, col, text, delay){
+    const el = document.createElement('div');
+    el.className = 'pzOrient';
+    el.textContent = text;
+    /* centre of the target cell in viewport coordinates */
+    el.style.left = (gRect.left + edge + (col + 0.5)*cs) + 'px';
+    el.style.top  = (gRect.top  + edge + row*cs - 10) + 'px';
+    el.style.animationDelay = delay + 's';
+    document.body.appendChild(el);
+    setTimeout(()=>el.remove(), (delay + 3.6)*1000);
+  }
+  makeTooltip(me.row, me.col, '📍 You are here', 0.05);
+  if(tCell) makeTooltip(tCell[0], tCell[1], '⭐ Go here', 0.45);
 }
 
 /* grid-pixel helpers for overlay animations.
@@ -1566,7 +1682,7 @@ function puzzleLabel(p){
   return `${sz}${PZ_NAMES[p.type]} #${idx+1}`;
 }
 function dailyFor(type){
-  const list = PUZZLES.puzzles.filter(p=>p.type===type && pzSize(p)===7);
+  const list = PUZZLES.puzzles.filter(p=>p.type===type && pzSize(p)===5);
   const d = new Date();
   const key = d.getFullYear()*10000 + (d.getMonth()+1)*100 + d.getDate();
   return list[(key * 48271) % list.length];
@@ -1579,7 +1695,8 @@ function startPuzzle(p, daily){
   state = rebuildPuzzle(p);
   puzzle.base = cloneState(state);
   logLines = [];
-  log(daily ? `📅 Daily: ${PZ_NAMES[p.type]}` : puzzleLabel(p));
+  if(daily){ const _di=['collect1','collect2','block1'].indexOf(p.type)+1;
+    log(`📅 Daily ${_di}/3: ${PZ_NAMES[p.type]}`); } else { log(puzzleLabel(p)); }
   uiLastMove=null;
   pawnArms=[null,null,null,null]; streaks=[0,0,0,0];
   $('overlay').classList.add('hidden');
@@ -1587,7 +1704,42 @@ function startPuzzle(p, daily){
   /* deal the maze in, same as a normal game */
   busy = true; dealing = true;
   render({deal:true});
-  setTimeout(()=>{ busy=false; dealing=false; render(); }, 2450);
+  setTimeout(()=>{ busy=false; dealing=false; render(); showPuzzleOrientation(); }, 2450);
+}
+
+/* find any {insert,open} that makes the target reachable in one turn
+   from the player's current position — used for collect2 stage-2 show-sol */
+function computeStage2Sol(s){
+  const me = s.players[0];
+  const tid = currentTargetId(me);
+  for(const insert of legalInserts(s)){
+    for(const open of distinctRotations(s.spare.open)){
+      const s2 = cloneState(s);
+      applyPush(s2, insert, open);
+      const me2 = s2.players[0]; /* post-push position (may have shifted) */
+      const g = tid===null ? me.start : findTreasure(s2, tid);
+      if(g && bfs(s2, me2.row, me2.col).set[g[0]][g[1]])
+        return {insert, open};
+    }
+  }
+  return null;
+}
+
+/* For collect2 show-solution: find all reachable cells from which
+   a winning second push exists.  Returns [[r,c], ...]. */
+function computeStage1Dests(s){
+  const me = s.players[0];
+  const reach = bfs(s, me.row, me.col);
+  const dests = [];
+  for(let r=0; r<s.size; r++){
+    for(let c=0; c<s.size; c++){
+      if(!reach.set[r][c]) continue;
+      const s2 = cloneState(s);
+      s2.players[0].row = r; s2.players[0].col = c;
+      if(computeStage2Sol(s2) !== null) dests.push([r,c]);
+    }
+  }
+  return dests;
 }
 
 /* my pushes helpers reused for checking */
@@ -1648,6 +1800,8 @@ function puzzleAfterPush(){
   } else {
     /* collect2, first push: no early judgement — the player plays the
        whole line out and is only flagged if the finish fails */
+    if(puzzle.showSol)
+      puzzle.stage1Dests = computeStage1Dests(state);
     render();
   }
 }
@@ -1678,8 +1832,16 @@ function puzzleMove(r, c){
         ? firstPush.insert : state.lastInsert;
       puzzleProgress(solvingInsert);
     } else if(puzzle.data.type==='collect2' && puzzle.stage===1){
-      puzzle.stage = 2;
-      log('First turn done — now finish it.');
+      puzzle.stage = 2; puzzle.stage1Dests = null;
+      /* if showSol active, compute and pre-load the second push solution */
+      if(puzzle.showSol){
+        const sol2 = computeStage2Sol(state);
+        if(sol2){ state.spare.open = sol2.open; puzzle.showSolIns = sol2.insert; }
+        else { puzzle.showSolIns = null; }
+        log('First move done — push the highlighted line for the second move.');
+      } else {
+        log('First turn done — now finish it.');
+      }
       render();
     } else {
       puzzleFail("That move doesn't reach the objective.");
@@ -1712,11 +1874,51 @@ function puzzleProgress(solvingInsert){
   }, 1600);
 }
 
+function saveDailyStat(pz){
+  if(!pz||!pz.daily) return;
+  const d=new Date();
+  const key=d.getFullYear()*10000+(d.getMonth()+1)*100+d.getDate();
+  try{
+    const stats=JSON.parse(localStorage.getItem('labyrinthDailyStats_'+key)||'{}');
+    stats[pz.data.id]={tries:pz.attempts+1, foundSols:pz.foundSols.size,
+                        totalSols:pz.data.solutions||1, hint:pz.hintUsed};
+    localStorage.setItem('labyrinthDailyStats_'+key, JSON.stringify(stats));
+  }catch(e){}
+}
+function showDailyComplete(){
+  const d=new Date();
+  const months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const dateStr=`${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
+  const key=d.getFullYear()*10000+(d.getMonth()+1)*100+d.getDate();
+  let stats={};
+  try{ stats=JSON.parse(localStorage.getItem('labyrinthDailyStats_'+key)||'{}'); }catch(e){}
+  const order=['collect1','collect2','block1'];
+  const names={collect1:'Collect in 1',collect2:'Collect in 2',block1:'Block'};
+  const icons={collect1:'⭐',collect2:'🔀',block1:'🛡️'};
+  const lines=[`🗺️ Labyrinth Daily — ${dateStr}`];
+  for(const t of order){
+    const p=dailyFor(t);
+    const st=stats[p.id]||{};
+    const tries=st.tries||1;
+    let line=`${icons[t]} ${names[t]}: ${tries} ${tries===1?'try':'tries'}`;
+    if((st.totalSols||1)>1) line+=` · ${st.foundSols||0}/${st.totalSols} solutions`;
+    if(st.hint) line+=' 💡';
+    lines.push(line);
+  }
+  lines.push('');
+  lines.push('https://whaaaaaaaaaaaaa.github.io/Labyrinth/');
+  const text=lines.join('\n');
+  navigator.clipboard.writeText(text).catch(()=>{});
+  log('🎉 Daily complete! Results copied to clipboard.');
+  puzzle.dailyDone=true;
+  render();
+}
 function puzzleSolved(){
   puzzle.solved = true;
   puzzle.showSol = false;
   log(`✅ Solved in ${puzzle.attempts+1} attempt${puzzle.attempts?'s':''}!`);
   markSolved(puzzle.data.id);
+  saveDailyStat(puzzle);
   render();
 }
 
@@ -1766,22 +1968,43 @@ function updatePuzzleUI(){
   /* solution count: every mined puzzle is currently unique-solution, but
      the display reads from the data so multi-solution sets just work */
   const nSol = puzzle.data.solutions || 1;
-  $('puzzleStats').textContent =
-    `${puzzle.daily ? '📅 Daily · '+PZ_NAMES[puzzle.data.type] : puzzleLabel(puzzle.data)}`
-    + ` · ${nSol} solution${nSol>1?'s':''}`
-    + (nSol>1 ? ` · found ${puzzle.foundSols.size}/${nSol}` : '')
-    + ` · attempts: ${puzzle.attempts}`;
+  if(puzzle.daily){
+    const _di=['collect1','collect2','block1'].indexOf(puzzle.data.type)+1;
+    $('puzzleStats').textContent=`📅 Daily ${_di}/3 · ${PZ_NAMES[puzzle.data.type]}`
+      +` · ${nSol} solution${nSol>1?'s':''}`
+      +(nSol>1?` · found ${puzzle.foundSols.size}/${nSol}`:'')
+      +` · attempts: ${puzzle.attempts}`;
+  } else {
+    $('puzzleStats').textContent =
+      `${puzzleLabel(puzzle.data)}`
+      + ` · ${nSol} solution${nSol>1?'s':''}`
+      + (nSol>1 ? ` · found ${puzzle.foundSols.size}/${nSol}` : '')
+      + ` · attempts: ${puzzle.attempts}`;
+  }
   $('pzSolBtn').classList.toggle('hidden', puzzle.solved || puzzle.attempts<3);
+  const _isLastDaily = puzzle.daily && puzzle.data.type==='block1';
   $('pzNextBtn').classList.toggle('hidden', !puzzle.solved);
+  if(puzzle.solved) $('pzNextBtn').textContent = _isLastDaily ? '📋 Share results' : 'Next puzzle';
   $('pzUndoBtn').classList.toggle('hidden', puzzle.solved || !puzzle.snaps.length);
-  $('pzHintBtn').classList.toggle('hidden', puzzle.solved || puzzle.showSol || puzzle.hintUsed);
+  $('pzHintBtn').classList.toggle('hidden', puzzle.solved || puzzle.showSol || puzzle.hintUsed || puzzle.snaps.length > 0);
   /* hint override */
   const nS = puzzle.data.solutions || 1;
   if(puzzle.solved)
     $('hint').textContent = (nS>1 ? `✅ All ${nS} solutions found!` : '✅ Solved!') + ' Try the next one.';
   else if(puzzle.lastProgressMsg) $('hint').textContent = puzzle.lastProgressMsg;
   else if(puzzle.failed) $('hint').textContent = '❌ ' + puzzle.failed + ' Study the board, then Undo.';
-  else if(puzzle.showSol) $('hint').textContent = 'Solution: push the highlighted line (spare already rotated).';
+  else if(puzzle.showSol){
+    if(state.phase==='move' && puzzle.data.type==='collect2' && puzzle.stage===1){
+      $('hint').textContent = 'Move to an orange-highlighted square — then the second push wins.';
+    } else {
+      const _ins = puzzle.showSolIns || puzzle.data.solution.insert;
+      const _glyph = {N:'▼',S:'▲',W:'▶',E:'◀'}[_ins.side];
+      const _name  = {N:'top',S:'bottom',W:'left',E:'right'}[_ins.side];
+      const _stage2note = (puzzle.data.type==='collect2' && puzzle.stage===2)
+        ? ' (second move)' : '';
+      $('hint').textContent = `Solution${_stage2note}: push from the ${_name} ${_glyph} — spare already rotated.`;
+    }
+  }
   else if(puzzle.hintUsed && !busy && state.phase==='push'){
     const names = {N:'North', S:'South', E:'East', W:'West'};
     const sols = puzzle.data.sols || [puzzle.data.solution];
@@ -1795,11 +2018,19 @@ function updatePuzzleUI(){
       : 'Rotate the spare, then push. Only one push is right.';
   /* show-solution highlight */
   if(puzzle.showSol && cellEls && !puzzle.solved){
-    const ins = puzzle.showSolIns || puzzle.data.solution.insert;
-    const vertical = ins.side==='N'||ins.side==='S';
-    for(let i=0;i<cellEls.length;i++){
-      const cell = vertical ? cellEls[i][ins.index] : cellEls[ins.index][i];
-      if(cell) cell.classList.add('previewLine');
+    /* During move phase of collect2 stage 1: highlight valid dest cells instead */
+    if(state.phase==='move' && puzzle.data.type==='collect2' && puzzle.stage===1 && puzzle.stage1Dests){
+      for(const [dr,dc] of puzzle.stage1Dests){
+        if(cellEls[dr] && cellEls[dr][dc]) cellEls[dr][dc].classList.add('solDest');
+      }
+    } else {
+      /* Push phase: show the highlighted push line + direction */
+      const ins = puzzle.showSolIns || puzzle.data.solution.insert;
+      const vertical = ins.side==='N'||ins.side==='S';
+      for(let i=0;i<cellEls.length;i++){
+        const cell = vertical ? cellEls[i][ins.index] : cellEls[ins.index][i];
+        if(cell){ cell.classList.add('previewLine'); cell.classList.add('push'+ins.side); }
+      }
     }
   }
 }
@@ -1845,7 +2076,15 @@ function openPuzzlePicker(dailyOnly){
   $('puzzleOverlay').classList.remove('hidden');
 }
 
-$('menuDaily').onclick = ()=> openPuzzlePicker(true);
+$('menuDaily').onclick = ()=>{
+  if(!PUZZLES_OK){ alert('puzzles.js not found next to labyrinth.html'); return; }
+  const _dOrder=['collect1','collect2','block1'];
+  const _ds=solvedSet();
+  const _first=_dOrder.find(t=>!_ds.has(dailyFor(t).id))||'collect1';
+  $('menuMain').classList.add('hidden');
+  $('overlay').classList.add('hidden');
+  startPuzzle(dailyFor(_first), true);
+};
 $('menuPuzzles').onclick = ()=> openPuzzlePicker(false);
 $('menuGame').onclick = ()=>{
   $('menuMain').classList.add('hidden');
@@ -1892,16 +2131,21 @@ $('pzHintBtn').onclick = ()=>{
   puzzle.hintUsed = true;
   render();
 };
-$('pzRetryBtn').onclick = ()=>{
-  if(!puzzle || busy) return;
-  state = cloneState(puzzle.base);
-  puzzle.stage=1; puzzle.solved=false; puzzle.showSol=false; puzzle.failed=null; puzzle.snaps=[];
-  uiLastMove=null; pawnArms=[null,null,null,null];
-  log('Position reset.');
-  render();
-};
+/* pzRetryBtn removed — Undo covers the same action */
 $('pzSolBtn').onclick = ()=>{
   if(!puzzle || busy || puzzle.solved) return;
+  /* collect2 at stage 2: just show the second push for the current position */
+  if(puzzle.data.type==='collect2' && puzzle.stage===2){
+    const sol2 = computeStage2Sol(state);
+    if(sol2){
+      state.spare.open = sol2.open;
+      puzzle.showSol = true; puzzle.failed = null;
+      puzzle.showSolIns = sol2.insert;
+      log('💡 Spare rotated — push the highlighted line for the second move.');
+      render();
+    }
+    return;
+  }
   state = cloneState(puzzle.base);
   puzzle.stage=1; puzzle.showSol=true; puzzle.failed=null; puzzle.snaps=[];
   /* reveal the first solution the player hasn't found yet */
@@ -1916,13 +2160,22 @@ $('pzSolBtn').onclick = ()=>{
 };
 $('pzNextBtn').onclick = ()=>{
   if(!puzzle || !puzzle.solved) return;
-  startPuzzle(puzzle.daily ? nextDaily() : nextUnsolved(), puzzle.daily);
+  if(!puzzle.daily){ startPuzzle(nextUnsolved(), false); return; }
+  const _dOrder=['collect1','collect2','block1'];
+  const _di=_dOrder.indexOf(puzzle.data.type);
+  if(_di>=_dOrder.length-1){ showDailyComplete(); return; }
+  startPuzzle(dailyFor(_dOrder[_di+1]), true);
 };
 $('pzExitBtn').onclick = ()=>{
   const wasDaily = !!(puzzle && puzzle.daily);
   puzzle = null;
   render();
-  openPuzzlePicker(wasDaily); /* rebuild list so solved marks are fresh */
+  if(wasDaily){
+    $('overlay').classList.remove('hidden');
+    $('menuMain').classList.remove('hidden');
+  } else {
+    openPuzzlePicker(false); /* rebuild list so solved marks are fresh */
+  }
 };
 
 document.querySelectorAll('.seatBtns').forEach(g=>{
@@ -1965,6 +2218,16 @@ function canRotateSpare(){
       && !state.players[state.current].isAI && state.winners===null
       && !(puzzle && (puzzle.solved || puzzle.failed));
 }
+/* Board mouse tracking for ghost spare cursor */
+$('boardGrid').addEventListener('mousemove', e=>{
+  spareCursorPos = {x: e.clientX, y: e.clientY};
+  updateSpareCursor();
+});
+$('boardGrid').addEventListener('mouseleave', ()=>{
+  spareCursorPos = null;
+  updateSpareCursor();
+});
+
 $('spareWrap').onclick = ()=>{
   if(!canRotateSpare()) return;
   state.spare.open = rot(state.spare.open, 1);
